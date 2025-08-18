@@ -661,7 +661,7 @@ export default function Home() {
                       size="sm"
                       className={`text-xs h-8 px-2 font-mono border shrink-0 touch-manipulation ${
                         selectedYears.includes(year)
-                          ? 'bg-white dark:bg-white text-black border-white dark:border-white'
+                          ? 'bg-black dark:bg-white text-white dark:text-black border-black dark:border-white'
                           : 'bg-background text-foreground border-border'
                       }`}
                       onClick={() => toggleYear(year)}
@@ -726,7 +726,7 @@ export default function Home() {
                   size="sm"
                   className={`text-xs h-6 px-2 font-mono border ${
                     selectedYears.includes(year)
-                      ? 'bg-white dark:bg-white text-black border-white dark:border-white'
+                      ? 'bg-black dark:bg-white text-white dark:text-black border-black dark:border-white'
                       : 'bg-background text-foreground border-border'
                   }`}
                   onClick={() => toggleYear(year)}
