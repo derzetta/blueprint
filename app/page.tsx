@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Search, FileText, Calendar, ExternalLink, Loader2, X, LogOut, Sun, Moon } from 'lucide-react';
+import { Search, FileText, Calendar, ExternalLink, Loader2, X, LogOut, Sun, Moon, Square } from 'lucide-react';
 import { useSession, signIn, signOut } from 'next-auth/react';
 import { useTheme } from '@/components/theme-provider';
 import ReactMarkdown from 'react-markdown';
@@ -11,8 +11,11 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Check, ChevronDown, ChevronsUpDown } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 
 interface Document {
   id: string;
@@ -49,10 +52,12 @@ export default function Home() {
   const [documentDetails, setDocumentDetails] = useState<DocumentDetails | null>(null);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [selectedYears, setSelectedYears] = useState<string[]>([]);
+  const [selectedDataTypes, setSelectedDataTypes] = useState<string[]>([]);
   const [topK, setTopK] = useState<number>(25);
   const [isPrivate, setIsPrivate] = useState<boolean>(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const responseRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Load saved settings from localStorage on mount
   useEffect(() => {
@@ -73,6 +78,13 @@ export default function Home() {
 
   // Available years in the database
   const availableYears = ['2018', '2019', '2020', '2021', '2022', '2023', '2024', '2025'];
+  
+  // Available data types
+  const availableDataTypes = [
+    { value: 'documents', label: 'Documents', icon: '📄' },
+    { value: 'excel', label: 'Spreadsheets', icon: '📊' },
+    { value: 'all', label: 'All Types', icon: '📁' }
+  ];
   
   // Available topK options
   const topKOptions = [10, 25, 50, 100];
@@ -96,6 +108,8 @@ export default function Home() {
         : [...prev, year]
     );
   };
+
+
 
   // Auto-scroll to bottom of response as it streams
   useEffect(() => {
@@ -136,17 +150,27 @@ export default function Home() {
       return;
     }
 
+    // Prevent new searches while one is in progress
+    if (isSearching || isStreaming) {
+      return;
+    }
+
     setIsSearching(true);
     setDocuments([]);
     setStreamedResponse('');
     setSearchData(null);
+
+    // Create abort controller for this request
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
       // Step 1: Search for relevant documents
       const searchResponse = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, selectedYears, topK, isPrivate }),
+        body: JSON.stringify({ question, selectedYears, selectedDataTypes, topK, isPrivate }),
+        signal: abortController.signal,
       });
 
       const searchResult = await searchResponse.json();
@@ -172,6 +196,7 @@ export default function Home() {
             question: searchResult.question, 
             chunks: searchResult.chunks 
           }),
+          signal: abortController.signal,
         });
 
         if (!chatResponse.ok) {
@@ -214,19 +239,39 @@ export default function Home() {
       } else {
         setStreamedResponse('I could not find any documents related to your question.');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error:', error);
-      setStreamedResponse('An error occurred while processing your question.');
+      if (error.name === 'AbortError') {
+        // Don't replace content on abort, user already stopped it manually
+        console.log('Search was cancelled by user');
+      } else {
+        setStreamedResponse('An error occurred while processing your question.');
+      }
     } finally {
       setIsSearching(false);
       setIsStreaming(false);
+      abortControllerRef.current = null;
+    }
+  };
+
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      setIsSearching(false);
+      setIsStreaming(false);
+      // Don't replace the content, just append a note that it was stopped
+      setStreamedResponse(prev => prev + '\n\n*[Search stopped by user]*');
+      abortControllerRef.current = null;
     }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSearch();
+      // Prevent search if already searching or streaming
+      if (!isSearching && !isStreaming) {
+        handleSearch();
+      }
     }
   };
 
@@ -651,7 +696,7 @@ export default function Home() {
                   </TooltipProvider>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 mb-2">
                 <span className="text-sm font-medium text-muted-foreground shrink-0">Board:</span>
                 <div className="flex gap-1 overflow-x-auto scrollbar-hide">
                   {availableYears.map((year) => (
@@ -680,6 +725,57 @@ export default function Home() {
                     </Button>
                   )}
                 </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-muted-foreground shrink-0">Type:</span>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 px-3 text-xs justify-between min-w-[120px] touch-manipulation"
+                    >
+                      <span>
+                        {selectedDataTypes.length === 0 
+                          ? 'All Types' 
+                          : selectedDataTypes.length === 1 
+                            ? availableDataTypes.find(dt => dt.value === selectedDataTypes[0])?.label
+                            : `${selectedDataTypes.length} selected`
+                        }
+                      </span>
+                      <ChevronsUpDown className="h-3 w-3 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[200px] p-0" align="start">
+                    <Command>
+                      <CommandList>
+                        <CommandGroup>
+                          {availableDataTypes.filter(dt => dt.value !== 'all').map((dataType) => (
+                            <CommandItem
+                              key={dataType.value}
+                              onSelect={() => {
+                                setSelectedDataTypes(prev => 
+                                  prev.includes(dataType.value)
+                                    ? prev.filter(t => t !== dataType.value)
+                                    : [...prev, dataType.value]
+                                );
+                              }}
+                              className="text-xs"
+                            >
+                              <Check
+                                className={`mr-2 h-3 w-3 ${
+                                  selectedDataTypes.includes(dataType.value) ? "opacity-100" : "opacity-0"
+                                }`}
+                              />
+                              <span className="mr-2">{dataType.icon}</span>
+                              {dataType.label}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
             </div>
             
@@ -744,6 +840,55 @@ export default function Home() {
                   <X className="h-3 w-3" />
                 </Button>
               )}
+              <span className="text-sm font-medium text-muted-foreground mr-1 ml-4">Type:</span>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-xs justify-between min-w-[100px] mr-2"
+                  >
+                    <span>
+                      {selectedDataTypes.length === 0 
+                        ? 'All Types' 
+                        : selectedDataTypes.length === 1 
+                          ? availableDataTypes.find(dt => dt.value === selectedDataTypes[0])?.label
+                          : `${selectedDataTypes.length} selected`
+                      }
+                    </span>
+                    <ChevronsUpDown className="h-3 w-3 opacity-50 ml-1" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[160px] p-0" align="start">
+                  <Command>
+                    <CommandList>
+                      <CommandGroup>
+                        {availableDataTypes.filter(dt => dt.value !== 'all').map((dataType) => (
+                          <CommandItem
+                            key={dataType.value}
+                            onSelect={() => {
+                              setSelectedDataTypes(prev => 
+                                prev.includes(dataType.value)
+                                  ? prev.filter(t => t !== dataType.value)
+                                  : [...prev, dataType.value]
+                              );
+                            }}
+                            className="text-xs"
+                          >
+                            <Check
+                              className={`mr-2 h-3 w-3 ${
+                                selectedDataTypes.includes(dataType.value) ? "opacity-100" : "opacity-0"
+                              }`}
+                            />
+                            <span className="mr-2">{dataType.icon}</span>
+                            {dataType.label}
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
           </div>
           
@@ -757,14 +902,16 @@ export default function Home() {
               className={`resize-none text-sm lg:text-base pr-16 ${!session ? 'opacity-60' : ''}`}
             />
             <Button
-              onClick={handleSearch}
-              disabled={isSearching || !question.trim() || !session}
-              variant={theme === 'dark' ? 'secondary' : 'default'}
+              onClick={isStreaming ? handleStop : handleSearch}
+              disabled={isSearching && !isStreaming || !question.trim() || !session}
+              variant={isStreaming ? 'destructive' : (theme === 'dark' ? 'secondary' : 'default')}
               className="absolute bottom-2 right-2 h-10 w-10 p-0 font-mono"
               size="sm"
             >
-              {isSearching ? (
+              {isSearching && !isStreaming ? (
                 <Loader2 className="w-5 h-5 animate-spin" />
+              ) : isStreaming ? (
+                <Square className="w-4 h-4" />
               ) : (
                 <Search className="w-5 h-5" />
               )}

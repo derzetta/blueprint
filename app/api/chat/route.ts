@@ -62,19 +62,47 @@ Answer:`;
       async start(controller) {
         try {
           for await (const chunk of stream) {
+            // Check if controller is still writable before enqueuing
+            if (controller.desiredSize === null) {
+              // Controller is closed, stop processing
+              break;
+            }
+            
             const content = chunk.choices[0]?.delta?.content || '';
             if (content) {
-              // Send the content as Server-Sent Events format
-              const data = `data: ${JSON.stringify({ content })}\n\n`;
-              controller.enqueue(new TextEncoder().encode(data));
+              try {
+                // Send the content as Server-Sent Events format
+                const data = `data: ${JSON.stringify({ content })}\n\n`;
+                controller.enqueue(new TextEncoder().encode(data));
+              } catch (enqueueError) {
+                // Controller might have been closed during enqueue
+                console.log('Stream was closed by client');
+                break;
+              }
             }
           }
-          // Send end signal
-          controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
-          controller.close();
+          
+          // Only send end signal and close if controller is still open
+          if (controller.desiredSize !== null) {
+            try {
+              controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+              controller.close();
+            } catch (closeError) {
+              // Controller already closed, that's fine
+              console.log('Stream was already closed');
+            }
+          }
         } catch (error) {
           console.error('Streaming error:', error);
-          controller.error(error);
+          // Only call error if controller is still open
+          if (controller.desiredSize !== null) {
+            try {
+              controller.error(error);
+            } catch (errorCallError) {
+              // Controller already closed
+              console.log('Could not send error, stream already closed');
+            }
+          }
         }
       },
     });

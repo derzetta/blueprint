@@ -26,7 +26,7 @@ async function getEmbedding(text: string) {
 
 export async function POST(request: NextRequest) {
   try {
-    const { question, selectedYears, topK, isPrivate } = await request.json();
+    const { question, selectedYears, selectedDataTypes, topK, isPrivate } = await request.json();
     
     if (!question) {
       return NextResponse.json({ error: 'Question is required' }, { status: 400 });
@@ -84,28 +84,60 @@ export async function POST(request: NextRequest) {
       // Step 4c: Search both summaries and questions indexes for comprehensive results
       console.log('Searching summaries and questions indexes');
       
-      // Build year filter for metadata queries
+      // Build filters for metadata queries
+      const dataTypes = selectedDataTypes || [];
       const yearFilter = years.length > 0 ? { year: { $in: years.map((y: string) => parseFloat(y)) } } : undefined;
+      
+      // Build data type filter
+      let dataTypeFilter = undefined;
+      if (dataTypes.length > 0 && !dataTypes.includes('all')) {
+        if (dataTypes.includes('documents') && dataTypes.includes('excel')) {
+          // Both selected - no filter needed
+          dataTypeFilter = undefined;
+        } else if (dataTypes.includes('documents')) {
+          dataTypeFilter = { 
+            $or: [
+              { source_type: { $ne: 'excel' } },
+              { source_type: { $exists: false } }
+            ]
+          };
+        } else if (dataTypes.includes('excel')) {
+          dataTypeFilter = { source_type: 'excel' };
+        }
+      }
+      
+      // Combine filters
+      const combinedFilter = (() => {
+        if (yearFilter && dataTypeFilter) {
+          return { $and: [yearFilter, dataTypeFilter] };
+        } else if (yearFilter) {
+          return yearFilter;
+        } else if (dataTypeFilter) {
+          return dataTypeFilter;
+        } else {
+          return undefined;
+        }
+      })();
 
       const [summaryResults, questionResults] = await Promise.all([
-        // Search summaries with year filter
+        // Search summaries with combined filter
         summaryIndex.query({
           vector: questionEmbedding,
           topK: searchTopK,
           includeMetadata: true,
-          filter: yearFilter,
+          filter: combinedFilter,
         }).catch(error => {
           if (error.message?.includes('404') || error.message?.includes('not found')) {
             throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
           }
           throw error;
         }),
-        // Search questions with year filter
+        // Search questions with combined filter
         questionsIndex.query({
           vector: questionEmbedding,
           topK: searchTopK,
           includeMetadata: true,
-          filter: yearFilter,
+          filter: combinedFilter,
         }).catch(error => {
           if (error.message?.includes('404') || error.message?.includes('not found')) {
             throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
@@ -198,46 +230,11 @@ export async function POST(request: NextRequest) {
       for (const docId of docIds) {
         console.log(`Searching chunks for document: ${docId}`);
         
-        // Check if this is an Excel document by looking at metadata
-        const hybridDoc = hybridDocuments.find(d => d.docId === docId);
-        const isExcelFile = hybridDoc?.metadata?.source_type === 'excel' || 
-                           hybridDoc?.metadata?.mimeType === 'application/vnd.google-apps.spreadsheet' ||
-                           hybridDoc?.metadata?.mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-        
-        if (isExcelFile) {
-          console.log(`${docId} is Excel file - using summary as content instead of chunks`);
-          // For Excel files, use the summary as the "chunk" content since it's more relevant
-          const summaryContent = hybridDoc?.metadata?.text || hybridDoc?.metadata?.summary || '';
-          if (summaryContent) {
-            const syntheticChunk = {
-              id: `summary-${docId}`,
-              content: summaryContent,
-              score: hybridDoc?.hybridScore || 0,
-              metadata: {
-                id: docId,
-                name: String(hybridDoc?.metadata?.name || 'Untitled'),
-                year: String(hybridDoc?.metadata?.year || 'unknown'),
-                link: hybridDoc?.metadata?.url || 
-                      hybridDoc?.metadata?.google_drive_link || 
-                      hybridDoc?.metadata?.drive_link || 
-                      hybridDoc?.metadata?.link || 
-                      null,
-                source_type: 'excel',
-                doc_type: 'summary_as_chunk',
-                ...hybridDoc?.metadata,
-              }
-            };
-            allChunks.push(syntheticChunk);
-            console.log(`Added Excel summary as chunk for ${docId}`);
-          }
-          continue; // Skip chunk search for Excel files
-        }
-        
-        // For non-Excel files, search chunks normally
+        // Search chunks (chunks use "id" field)
         let chunkResults;
         try {
-          // Apply year filter to chunks as well
-          const chunkFilter = yearFilter ? { ...yearFilter, id: docId } : { id: docId };
+          // Apply combined filter to chunks as well
+          const chunkFilter = combinedFilter ? { ...combinedFilter, id: docId } : { id: docId };
           chunkResults = await chunkIndex.query({
             vector: questionEmbedding,
             topK: 1, // Only get 1 chunk per document
@@ -257,12 +254,12 @@ export async function POST(request: NextRequest) {
         if (!chunkResults.matches?.length) {
           console.log(`No chunks found with filters for ${docId}, trying semantic search without filter`);
           try {
-            // Apply year filter even in fallback semantic search
+            // Apply combined filter even in fallback semantic search
             chunkResults = await chunkIndex.query({
               vector: questionEmbedding,
               topK: 1, // Only get 1 chunk per document
               includeMetadata: true,
-              filter: yearFilter, // Apply year filter for semantic search too
+              filter: combinedFilter, // Apply combined filter for semantic search too
             });
           } catch (error: any) {
             if (error.message?.includes('404') || error.message?.includes('not found')) {
