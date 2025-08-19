@@ -84,25 +84,28 @@ export async function POST(request: NextRequest) {
       // Step 4c: Search both summaries and questions indexes for comprehensive results
       console.log('Searching summaries and questions indexes');
       
+      // Build year filter for metadata queries
+      const yearFilter = years.length > 0 ? { year: { $in: years.map((y: string) => parseFloat(y)) } } : undefined;
+
       const [summaryResults, questionResults] = await Promise.all([
-        // Search summaries with year filter (like original Python code)
+        // Search summaries with year filter
         summaryIndex.query({
           vector: questionEmbedding,
-          topK: searchTopK, // User-controlled topK
+          topK: searchTopK,
           includeMetadata: true,
-          // Apply year filter if years are mentioned (like original: filter={"year": {"$in": state["years"]}})
-          filter: years.length > 0 ? { year: { $in: years.map((y: string) => parseFloat(y)) } } : undefined,
+          filter: yearFilter,
         }).catch(error => {
           if (error.message?.includes('404') || error.message?.includes('not found')) {
             throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
           }
           throw error;
         }),
-        // Also search questions for additional relevance
+        // Search questions with year filter
         questionsIndex.query({
           vector: questionEmbedding,
-          topK: searchTopK, // User-controlled topK
+          topK: searchTopK,
           includeMetadata: true,
+          filter: yearFilter,
         }).catch(error => {
           if (error.message?.includes('404') || error.message?.includes('not found')) {
             throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
@@ -195,14 +198,51 @@ export async function POST(request: NextRequest) {
       for (const docId of docIds) {
         console.log(`Searching chunks for document: ${docId}`);
         
-        // Search chunks (chunks use "id" field)
+        // Check if this is an Excel document by looking at metadata
+        const hybridDoc = hybridDocuments.find(d => d.docId === docId);
+        const isExcelFile = hybridDoc?.metadata?.source_type === 'excel' || 
+                           hybridDoc?.metadata?.mimeType === 'application/vnd.google-apps.spreadsheet' ||
+                           hybridDoc?.metadata?.mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+        
+        if (isExcelFile) {
+          console.log(`${docId} is Excel file - using summary as content instead of chunks`);
+          // For Excel files, use the summary as the "chunk" content since it's more relevant
+          const summaryContent = hybridDoc?.metadata?.text || hybridDoc?.metadata?.summary || '';
+          if (summaryContent) {
+            const syntheticChunk = {
+              id: `summary-${docId}`,
+              content: summaryContent,
+              score: hybridDoc?.hybridScore || 0,
+              metadata: {
+                id: docId,
+                name: String(hybridDoc?.metadata?.name || 'Untitled'),
+                year: String(hybridDoc?.metadata?.year || 'unknown'),
+                link: hybridDoc?.metadata?.url || 
+                      hybridDoc?.metadata?.google_drive_link || 
+                      hybridDoc?.metadata?.drive_link || 
+                      hybridDoc?.metadata?.link || 
+                      null,
+                source_type: 'excel',
+                doc_type: 'summary_as_chunk',
+                ...hybridDoc?.metadata,
+              }
+            };
+            allChunks.push(syntheticChunk);
+            console.log(`Added Excel summary as chunk for ${docId}`);
+          }
+          continue; // Skip chunk search for Excel files
+        }
+        
+        // For non-Excel files, search chunks normally
         let chunkResults;
         try {
+          // Apply year filter to chunks as well
+          const chunkFilter = yearFilter ? { ...yearFilter, id: docId } : { id: docId };
           chunkResults = await chunkIndex.query({
             vector: questionEmbedding,
             topK: 1, // Only get 1 chunk per document
             includeMetadata: true,
-            filter: { id: docId }, // Chunks use "id" field
+            filter: chunkFilter,
           });
         } catch (error: any) {
           if (error.message?.includes('404') || error.message?.includes('not found')) {
@@ -217,11 +257,12 @@ export async function POST(request: NextRequest) {
         if (!chunkResults.matches?.length) {
           console.log(`No chunks found with filters for ${docId}, trying semantic search without filter`);
           try {
+            // Apply year filter even in fallback semantic search
             chunkResults = await chunkIndex.query({
               vector: questionEmbedding,
               topK: 1, // Only get 1 chunk per document
               includeMetadata: true,
-              // No filter - rely on semantic similarity
+              filter: yearFilter, // Apply year filter for semantic search too
             });
           } catch (error: any) {
             if (error.message?.includes('404') || error.message?.includes('not found')) {
@@ -363,28 +404,9 @@ export async function POST(request: NextRequest) {
         score: d.score.toFixed(3) 
       })));
 
-      // Filter by mentioned years if any were extracted
-      if (years.length > 0) {
-        console.log('Filtering documents by years:', years);
-        console.log('Available document years:', Array.from(new Set(documentsBeforeYearFilter.map((d: any) => d.year))));
-        
-        documents = documentsBeforeYearFilter.filter((doc: any) => {
-          const docYear = String(doc.year);
-          const matches = years.includes(docYear) || years.includes(String(parseInt(docYear)));
-          console.log(`Document "${doc.name}" year "${docYear}" matches years ${JSON.stringify(years)}: ${matches}`);
-          return matches;
-        });
-        console.log(`Filtered from ${documentsBeforeYearFilter.length} to ${documents.length} documents by year`);
-        
-        // If no documents found for the specified year, do NOT fall back when year is explicitly mentioned
-        if (documents.length === 0) {
-          console.log('No documents found for specified years. Since year is explicitly mentioned, not falling back to other years.');
-          // Keep documents empty to ensure only year-specific results
-        }
-      } else {
-        documents = documentsBeforeYearFilter;
-        console.log('No years mentioned, keeping all documents:', documents.length);
-      }
+      // Year filtering already applied at Pinecone query level
+      documents = documentsBeforeYearFilter;
+      console.log('Documents after Pinecone year filtering:', documents.length);
 
       console.log('Documents with question similarity:', documents.map(d => ({ 
         name: d.name, 
