@@ -842,7 +842,7 @@ export default function Home() {
                       />
                     </Button>
                   </PopoverTrigger>
-                  <PopoverContent className="w-[200px] p-2" align="start" side="top">
+                  <PopoverContent className="w-[200px] p-2 shadow-none" align="start" side="top">
                     <Command className="bg-transparent">
                       <CommandList>
                         <CommandGroup>
@@ -942,7 +942,7 @@ export default function Home() {
                     />
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent className="w-[200px] p-2" align="start" side="top">
+                <PopoverContent className="w-[200px] p-2 shadow-none" align="start" side="top">
                   <Command className="bg-transparent">
                     <CommandList>
                       <CommandGroup>
