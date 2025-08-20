@@ -85,6 +85,16 @@ export default function Home() {
     }
   }, [session?.user?.role, isPrivate]);
 
+  // Default to private for admins if no saved preference exists yet
+  useEffect(() => {
+    if (!session) return;
+    const savedIsPrivate = localStorage.getItem('blueprint-private');
+    if (session.user?.role === 'ADMIN' && (savedIsPrivate === null || savedIsPrivate === undefined)) {
+      updateIsPrivate(true);
+      localStorage.setItem('blueprint-private', 'true');
+    }
+  }, [session?.user?.role]);
+
   // Available years in the database
   const availableYears = ['2018', '2019', '2020', '2021', '2022', '2023', '2024', '2025'];
   
