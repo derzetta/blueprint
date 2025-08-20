@@ -86,7 +86,10 @@ export async function POST(request: NextRequest) {
       
       // Build filters for metadata queries
       const dataTypes = selectedDataTypes || [];
-      const yearFilter = years.length > 0 ? { year: { $in: years.map((y: string) => parseFloat(y)) } } : undefined;
+      const yearFilter = years.length > 0 ? { year: { $in: years } } : undefined;
+      
+      console.log('Selected data types:', dataTypes);
+      console.log('Year filter:', yearFilter);
       
       // Build data type filter
       let dataTypeFilter = undefined;
@@ -94,16 +97,26 @@ export async function POST(request: NextRequest) {
         if (dataTypes.includes('documents') && dataTypes.includes('excel')) {
           // Both selected - no filter needed
           dataTypeFilter = undefined;
+          console.log('Both documents and excel selected - no filter');
         } else if (dataTypes.includes('documents')) {
           dataTypeFilter = { 
-            $or: [
-              { source_type: { $ne: 'excel' } },
-              { source_type: { $exists: false } }
+            $and: [
+              { mimeType: { $ne: 'application/vnd.google-apps.spreadsheet' } },
+              { mimeType: { $ne: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } }
             ]
           };
+          console.log('Documents only filter:', dataTypeFilter);
         } else if (dataTypes.includes('excel')) {
-          dataTypeFilter = { source_type: 'excel' };
+          dataTypeFilter = { 
+            $or: [
+              { mimeType: 'application/vnd.google-apps.spreadsheet' },
+              { mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+            ]
+          };
+          console.log('Excel only filter:', dataTypeFilter);
         }
+      } else {
+        console.log('No data type filtering (all or empty)');
       }
       
       // Combine filters
@@ -118,6 +131,8 @@ export async function POST(request: NextRequest) {
           return undefined;
         }
       })();
+      
+      console.log('Combined filter for Pinecone query:', JSON.stringify(combinedFilter, null, 2));
 
       const [summaryResults, questionResults] = await Promise.all([
         // Search summaries with combined filter
@@ -128,7 +143,11 @@ export async function POST(request: NextRequest) {
           filter: combinedFilter,
         }).catch(error => {
           if (error.message?.includes('404') || error.message?.includes('not found')) {
-            throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
+            if (isPrivate) {
+              throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
+            } else {
+              throw new Error('Public version is not available yet, we work hard to filter our files for you. You can request access to private version at board@aaltoes.com');
+            }
           }
           throw error;
         }),
@@ -140,7 +159,11 @@ export async function POST(request: NextRequest) {
           filter: combinedFilter,
         }).catch(error => {
           if (error.message?.includes('404') || error.message?.includes('not found')) {
-            throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
+            if (isPrivate) {
+              throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
+            } else {
+              throw new Error('Public version is not available yet, we work hard to filter our files for you. You can request access to private version at board@aaltoes.com');
+            }
           }
           throw error;
         })
@@ -148,6 +171,21 @@ export async function POST(request: NextRequest) {
 
       console.log('Summary results count:', summaryResults.matches?.length);
       console.log('Question results count:', questionResults.matches?.length);
+      
+      // Debug: Show some example results to verify filter is working
+      if (summaryResults.matches?.length > 0) {
+        console.log('Sample summary results:');
+        summaryResults.matches.slice(0, 3).forEach((match: any, i: number) => {
+          console.log(`  ${i+1}. ${match.metadata?.name} - mimeType: ${match.metadata?.mimeType}`);
+        });
+      }
+      
+      if (questionResults.matches?.length > 0) {
+        console.log('Sample question results:');
+        questionResults.matches.slice(0, 3).forEach((match: any, i: number) => {
+          console.log(`  ${i+1}. ${match.metadata?.name} - mimeType: ${match.metadata?.mimeType}`);
+        });
+      }
 
       // Step 5: Create hybrid document ranking combining summaries and questions
       const processedSummaries = summaryResults.matches || [];
@@ -243,7 +281,11 @@ export async function POST(request: NextRequest) {
           });
         } catch (error: any) {
           if (error.message?.includes('404') || error.message?.includes('not found')) {
-            throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
+            if (isPrivate) {
+              throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
+            } else {
+              throw new Error('Public version is not available yet, we work hard to filter our files for you. You can request access to private version at board@aaltoes.com');
+            }
           }
           throw error;
         }
@@ -263,7 +305,11 @@ export async function POST(request: NextRequest) {
             });
           } catch (error: any) {
             if (error.message?.includes('404') || error.message?.includes('not found')) {
-              throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
+              if (isPrivate) {
+                throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
+              } else {
+                throw new Error('Public version is not available yet, we work hard to filter our files for you. You can request access to private version at board@aaltoes.com');
+              }
             }
             throw error;
           }
@@ -468,8 +514,8 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Search error:', error);
     
-    // Check if this is our custom "not implemented" error
-    if (error.message?.includes('not implemented yet')) {
+    // Check if this is our custom availability error (public or private)
+    if (error.message?.includes('not implemented yet') || error.message?.includes('not available yet')) {
       return NextResponse.json(
         { error: error.message },
         { status: 400 }

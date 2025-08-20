@@ -1,137 +1,161 @@
 import os
-import io
+import sys
 import pickle
 import pandas as pd
 from tqdm import tqdm
 from typing import List
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-from langchain_community.document_loaders import Docx2txtLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chat_models import ChatOpenAI
-from langchain.embeddings import OpenAIEmbeddings
 from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
 
 # ——— Load environment variables ———
 load_dotenv()
 
 # ——— Config & Globals ———
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-backup_path = "questions_backup.pkl"
-backup_every = 50
+summaries_backup_path = "summaries_backup_2025.pkl"
+questions_backup_path = "questions_backup_2025.pkl"
+files_index_path = "files_0AGhLXRXVGCy1Uk9PVA.csv"   # <—— CSV with name/year
+backup_every = 20
 
-llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0, openai_api_key=OPENAI_API_KEY)
-splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
-embedder = OpenAIEmbeddings(model_name="text-embedding-ada-002", openai_api_key=OPENAI_API_KEY)
+llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, api_key=OPENAI_API_KEY)
 
-creds = Credentials.from_authorized_user_file("token.json", ["https://www.googleapis.com/auth/drive.readonly"])
-service = build("drive", "v3", credentials=creds)
-
-# ——— Load backup if it exists ———
-if os.path.exists(backup_path):
-    with open(backup_path, "rb") as f:
-        out = pickle.load(f)
-    print(f"[Resume] Loaded backup with {len(out['doc_id'])} documents.")
+# ——— Load existing questions backup if it exists ———
+if os.path.exists(questions_backup_path):
+    with open(questions_backup_path, "rb") as f:
+        questions_out = pickle.load(f)
+    if isinstance(questions_out, dict) and "chunks" in questions_out:
+        questions_out.pop("chunks", None)
+    print(f"[Resume] Loaded questions backup with {len(questions_out.get('doc_id', []))} documents.")
 else:
-    out = {"doc_id": [], "chunks": [], "questions": []}
-    print("[Start] No backup found. Starting from scratch.")
+    questions_out = {"doc_id": [], "questions": []}
+    print("[Start] No questions backup found. Starting from scratch.")
 
-already_processed = set(out["doc_id"])
+already_processed_questions = set(questions_out["doc_id"])
 
-# ——— Aaltoes-specific Question Generator ———
-def generate_questions(text: str, n: int = 10) -> List[str]:
+# ——— Load summaries backup ———
+if not os.path.exists(summaries_backup_path):
+    print(f"[Error] Summaries backup not found at {summaries_backup_path}")
+    sys.exit(1)
+
+with open(summaries_backup_path, "rb") as f:
+    summaries_data = pickle.load(f)
+
+print(f"[Info] Loaded summaries for {len(summaries_data['doc_id'])} documents.")
+
+# ——— Load file metadata (file_name, year) ———
+if not os.path.exists(files_index_path):
+    print(f"[Error] files_index.csv not found at {files_index_path}")
+    sys.exit(1)
+
+files_df = pd.read_csv(files_index_path)
+# Expecting columns: id, name, year
+if not {"id", "name", "year"}.issubset(files_df.columns):
+    print("[Error] files_index.csv must contain columns: id, name, year")
+    sys.exit(1)
+
+meta_map = files_df.set_index("id")[["name", "year"]].to_dict(orient="index")
+print(f"[Info] Loaded metadata for {len(meta_map)} files from {files_index_path}")
+
+# ——— Question Generation ———
+def generate_questions_from_summary(summary: str, file_name: str = None, year: str = None, n: int = 10) -> List[str]:
+    context = f"File: {file_name} (Year: {year})\n" if (file_name and year) else ""
+
     prompt = (
-        f"This is an internal document related to Aaltoes (startup support, events, partnerships, board, funding, or deep tech initiatives).\n"
-        f"Based on the content below, generate {n} specific questions that the document could help answer.\n\n"
-        f"TEXT:\n{text}\n\n"
+        f"This is a summary of a document from Aaltoes (startup support, events, partnerships, board, funding, or deep tech initiatives).\n"
+        f"{context}\n"
+        f"Based on the summary below, generate {n} specific search questions that someone would ask when looking for this document.\n"
+        f"Focus on what users would search for to FIND this document.\n\n"
+        f"SUMMARY:\n{summary}\n\n"
+        f"Generate questions that someone would ask when searching for:\n"
+        f"- Specific data or metrics they need\n"
+        f"- Information about events, partnerships, or initiatives\n"
+        f"- Financial data, budgets, or funding information\n"
+        f"- Member lists, contact information, or organizational data\n"
+        f"- Performance metrics or analytics\n"
+        f"- Historical data or trend information\n"
+        f"- Strategic plans or operational details\n\n"
+        f"Make the questions natural search queries that would help users discover this document.\n"
         f"QUESTIONS:"
     )
     try:
         response = llm.invoke(prompt)
-        return [q.strip("- ").strip() for q in response.content.strip().split("\n") if q.strip()]
+        raw_lines = response.content.splitlines()
+        questions = [q.strip().lstrip("-•0123456789. ").strip() for q in raw_lines if q.strip()]
+        questions = list(dict.fromkeys([q for q in questions if len(q) > 10]))[:n]
+        return questions
     except Exception as e:
         print(f"[Error generating questions] {e}")
         return []
 
-# ——— Main function ———
-def extract_data(file_ids: List[str]):
-    failed_ids = []
-    processed_count = 0
+# ——— Main processing function ———
+def generate_all_questions():
+    processed_count, failed_count, skipped_count = 0, 0, 0
+    total_docs = len(summaries_data['doc_id'])
 
-    for i, fid in enumerate(tqdm(file_ids, desc="Processing files")):
-        if fid in already_processed:
+    print(f"[Info] Starting processing of {total_docs} documents")
+    print(f"[Info] Already processed: {len(already_processed_questions)} documents will be skipped")
+
+    for i in tqdm(range(total_docs), desc="Generating questions"):
+        doc_id = summaries_data['doc_id'][i]
+
+        # Skip if already processed
+        if doc_id in already_processed_questions:
+            skipped_count += 1
             continue
 
         try:
-            mime_type = meta_map[fid]["mimeType"]
-            fh = io.BytesIO()
+            summary = summaries_data['summary'][i]
+            file_name, year = "Unknown", "Unknown"
+            if doc_id in meta_map:
+                file_name = meta_map[doc_id].get("name", "Unknown")
+                year = meta_map[doc_id].get("year", "Unknown")
 
-            # Download document
-            if mime_type == 'application/vnd.google-apps.document':
-                request = service.files().export_media(
-                    fileId=fid,
-                    mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-                )
-            elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-                request = service.files().get_media(fileId=fid)
+            questions = []
+            if summary and len(summary.strip()) > 20:
+                questions = generate_questions_from_summary(summary, file_name, year)
+
+            if questions:
+                questions_out["doc_id"].append(doc_id)
+                questions_out["questions"].append(questions)
+                processed_count += 1
+                print(f"\n{'='*60}")
+                print(f"PROCESSED {processed_count}: {file_name} (Year: {year})")
+                print(f"Doc ID: {doc_id}")
+                for j, q in enumerate(questions, 1):
+                    print(f"  {j}. {q}")
+                print(f"{'='*60}")
             else:
-                raise ValueError(f"Unsupported MIME type: {mime_type}")
-
-            downloader = MediaIoBaseDownload(fh, request)
-            while not downloader.next_chunk()[1]:
-                pass
-
-            # Load and split document
-            fh.seek(0)
-            with open("temp.docx", "wb") as temp_f:
-                temp_f.write(fh.read())
-
-            docs = Docx2txtLoader("temp.docx").load()
-            chunks = splitter.split_documents(docs)
-
-            # Concatenate all text chunks for question generation
-            full_text = "\n\n".join([doc.page_content for doc in chunks])
-            questions = generate_questions(full_text)
-
-            # Store result
-            out["doc_id"].append(fid)
-            out["chunks"].append(chunks)
-            out["questions"].append(questions)
-
-            processed_count += 1
+                print(f"[Warning] No questions generated for {doc_id}")
+                failed_count += 1
 
         except Exception as e:
-            print(f"[Error] {fid}: {e}")
-            failed_ids.append(fid)
-            continue
+            print(f"[Error] Processing {doc_id}: {e}")
+            failed_count += 1
 
         # Periodic backup
         if processed_count > 0 and processed_count % backup_every == 0:
-            with open(backup_path, "wb") as f:
-                pickle.dump(out, f, protocol=pickle.HIGHEST_PROTOCOL)
-            print(f"[Backup] Saved after {len(out['doc_id'])} total files")
+            with open(questions_backup_path, "wb") as f:
+                pickle.dump(questions_out, f, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"\n[Backup] Saved after {processed_count} processed documents")
 
     # Final backup
-    with open(backup_path, "wb") as f:
-        pickle.dump(out, f, protocol=pickle.HIGHEST_PROTOCOL)
-    print(f"[Done] Final backup saved to {backup_path}")
+    with open(questions_backup_path, "wb") as f:
+        pickle.dump(questions_out, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print(f"\n[Done] Final backup saved to {questions_backup_path}")
 
-    return out, failed_ids
+    return processed_count, failed_count, skipped_count
 
 # ——— Entry Point ———
 if __name__ == "__main__":
-    df = pd.read_csv("files_index_safe.csv")
-    meta_df = df[df['mimeType'].isin([
-        'application/vnd.google-apps.document',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    ])]
-    file_ids = meta_df["id"].tolist()
-    meta_map = meta_df.set_index("id").to_dict(orient="index")
+    print(f"[Info] Reading summaries from: {summaries_backup_path}")
+    print(f"[Info] Reading file metadata from: {files_index_path}")
+    processed, failed, skipped = generate_all_questions()
 
-    data, failed = extract_data(file_ids)
-
-    if failed:
-        print(f"[Summary] {len(failed)} files failed:")
-        for fid in failed:
-            print(f" - {fid}")
+    print(f"\n[Final Summary]")
+    print(f"Total documents: {len(summaries_data['doc_id'])}")
+    print(f"Skipped: {skipped}")
+    print(f"Processed: {processed}")
+    print(f"Failed: {failed}")
+    print(f"Total in backup now: {len(questions_out['doc_id'])}")
+    print(f"Total questions: {sum(len(q) for q in questions_out['questions'])}")
+    print(f"Results saved to: {questions_backup_path}")

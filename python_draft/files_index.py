@@ -2,7 +2,7 @@ from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from typing import Any, List, Dict, Union
 import pandas as pd
-from python_scripts.settings import drive_folders, ALLOWED_TYPES, SKIP_FOLDER_ID
+from python_draft.settings import drive_folders, ALLOWED_TYPES, SKIP_FOLDER_ID
 
 def fetch_files_recursive(
     service: Any,
@@ -88,13 +88,10 @@ if __name__ == "__main__":
 
     service = build("drive", "v3", credentials=creds)
 
-    for folder in drive_folders:
-        files = fetch_files_recursive(service, drive_folders[folder])
-        print(f"extracted {len(files)} files for {folder}")
-        df = pd.DataFrame(files.copy())
-        df['name'] = df.apply(get_extension, axis=1)
-        df['year'] = folder
-        df.to_csv(f"files_{folder}.csv", index=False)
-
-    df = pd.concat([pd.read_csv(f"files_{folder}.csv") for folder in drive_folders])
-    df.to_csv("files_index.csv", index=False)
+    folder = '0AGhLXRXVGCy1Uk9PVA'
+    files = fetch_files_recursive(service, folder)
+    print(f"extracted {len(files)} files for {folder}")
+    df = pd.DataFrame(files.copy())
+    df['name'] = df.apply(get_extension, axis=1)
+    df['year'] = folder
+    df.to_csv(f"files_{folder}.csv", index=False)

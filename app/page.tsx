@@ -56,6 +56,8 @@ export default function Home() {
   const [topK, setTopK] = useState<number>(25);
   const [isPrivate, setIsPrivate] = useState<boolean>(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
+  const [showAvailabilityModal, setShowAvailabilityModal] = useState(false);
+  const [availabilityType, setAvailabilityType] = useState<'public' | 'private'>('public');
   const responseRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -76,14 +78,21 @@ export default function Home() {
     localStorage.removeItem('blueprint-selected-years');
   }, []);
 
+  // Reset to public mode if user loses admin privileges while in private mode
+  useEffect(() => {
+    if (isPrivate && session?.user?.role !== 'ADMIN') {
+      updateIsPrivate(false);
+    }
+  }, [session?.user?.role, isPrivate]);
+
   // Available years in the database
   const availableYears = ['2018', '2019', '2020', '2021', '2022', '2023', '2024', '2025'];
   
   // Available data types
   const availableDataTypes = [
-    { value: 'documents', label: 'Documents', icon: '📄' },
-    { value: 'excel', label: 'Spreadsheets', icon: '📊' },
-    { value: 'all', label: 'All Types', icon: '📁' }
+    { value: 'documents', label: 'Documents' },
+    { value: 'excel', label: 'Spreadsheets' },
+    { value: 'all', label: 'All Types' }
   ];
   
   // Available topK options
@@ -150,6 +159,15 @@ export default function Home() {
       return;
     }
 
+    // Check if user is trying to access private mode without admin privileges
+    if (isPrivate && session?.user?.role !== 'ADMIN') {
+      // Reset to public mode and show availability dialog
+      updateIsPrivate(false);
+      setAvailabilityType('private');
+      setShowAvailabilityModal(true);
+      return;
+    }
+
     // Prevent new searches while one is in progress
     if (isSearching || isStreaming) {
       return;
@@ -176,8 +194,18 @@ export default function Home() {
       const searchResult = await searchResponse.json();
       
       if (!searchResponse.ok) {
-        // If there's a specific error message from the API, use it
+        // Check if this is any availability message (public or private)
         const errorMessage = searchResult.error || 'Search failed';
+        if (errorMessage.includes('not available yet')) {
+          setAvailabilityType('public');
+          setShowAvailabilityModal(true);
+          return;
+        } else if (errorMessage.includes('not implemented yet')) {
+          setAvailabilityType('private');
+          setShowAvailabilityModal(true);
+          return;
+        }
+        // For other errors, show the error message
         setStreamedResponse(errorMessage);
         return;
       }
@@ -237,6 +265,12 @@ export default function Home() {
           }
         }
       } else {
+        // Check if we're in public mode and got no results - might be unavailable
+        if (!isPrivate) {
+          setAvailabilityType('public');
+          setShowAvailabilityModal(true);
+          return;
+        }
         setStreamedResponse('I could not find any documents related to your question.');
       }
     } catch (error: any) {
@@ -279,7 +313,7 @@ export default function Home() {
     return (
       <main className="h-screen bg-background flex items-center justify-center">
         <div className="text-center">
-          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
+                  <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
           <p className="text-muted-foreground text-sm">Loading...</p>
         </div>
       </main>
@@ -290,25 +324,26 @@ export default function Home() {
     <main className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Full-width Header */}
       <div className="w-full bg-background">
-        <div className="flex items-center justify-between py-4 lg:py-6 px-4 lg:px-6 mt-4">
-            {/* Logo - Left side with padding from border */}
-            <div className="flex items-center">
-              <img 
-                src={theme === 'dark' ? "https://www.aaltoes.com/bank/aaltoes_white.svg" : "https://www.aaltoes.com/bank/aaltoes_dark.svg"}
-                alt="Aaltoes" 
-                className="h-6 lg:h-7"
-              />
-            </div>
-            
-            {/* Centered Title */}
-            <div className="absolute left-1/2 transform -translate-x-1/2">
-              <h1 className="text-2xl lg:text-3xl font-bold text-foreground mb-1">
-                BLUEPRINT
-              </h1>
-            </div>
+        {/* First Row: Logo, BLUEPRINT, Auth Buttons */}
+        <div className="relative flex items-center justify-between py-4 lg:py-6 px-4 lg:px-6 mt-4">
+          {/* Logo - Left side */}
+          <div className="flex items-center">
+            <img 
+              src={theme === 'dark' ? "https://www.aaltoes.com/bank/aaltoes_white.svg" : "https://www.aaltoes.com/bank/aaltoes_dark.svg"}
+              alt="Aaltoes" 
+              className="h-6 lg:h-7"
+            />
+          </div>
+          
+          {/* Absolutely Centered BLUEPRINT Title */}
+          <div className="absolute left-1/2 transform -translate-x-1/2">
+            <h1 className="text-2xl lg:text-3xl font-bold text-foreground">
+              BLUEPRINT
+            </h1>
+          </div>
 
-            {/* Theme Toggle and Auth Button - Right side with padding from border */}
-            <div className="flex items-center gap-2">
+          {/* Theme Toggle and Auth Button - Right side */}
+          <div className="flex items-center gap-3">
               {/* Theme Toggle Button */}
               <Button
                 variant="ghost"
@@ -349,10 +384,49 @@ export default function Home() {
               )}
             </div>
         </div>
+        
+        {/* Second Row: Centered Private/Public Toggle */}
+        <div className="flex justify-center pb-4 px-4 lg:px-6">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="inline-flex rounded-lg border border-border bg-background p-1">
+                  <button
+                    className={`px-2 py-1 text-xs font-mono rounded-md transition-colors ${
+                      !isPrivate 
+                        ? 'bg-blue-600 text-white dark:bg-blue-500 dark:text-white' 
+                        : 'text-muted-foreground hover:text-foreground'
+                    } ${session?.user?.role !== 'ADMIN' ? 'cursor-default' : 'cursor-pointer'}`}
+                    onClick={() => session?.user?.role === 'ADMIN' && updateIsPrivate(false)}
+                    disabled={session?.user?.role !== 'ADMIN'}
+                  >
+                    Public
+                  </button>
+                  <button
+                    className={`px-2 py-1 text-xs font-mono rounded-md transition-colors ${
+                      isPrivate 
+                        ? 'bg-blue-600 text-white dark:bg-blue-500 dark:text-white' 
+                        : 'text-muted-foreground hover:text-foreground'
+                    } ${session?.user?.role !== 'ADMIN' ? 'cursor-default' : 'cursor-pointer'}`}
+                    onClick={() => session?.user?.role === 'ADMIN' && updateIsPrivate(true)}
+                    disabled={session?.user?.role !== 'ADMIN'}
+                  >
+                    Private
+                  </button>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p className="text-xs max-w-xs">
+                  Private documents may contain sensitive information and are available only for the board.
+                </p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
       </div>
 
       {/* Content Container */}
-      <div className="max-w-6xl mx-auto w-full p-4 lg:p-6 flex flex-col overflow-hidden" style={{height: 'calc(100vh - 280px)'}}>
+      <div className="max-w-6xl mx-auto w-full p-4 lg:p-6 flex flex-col overflow-hidden" style={{height: 'calc(100vh - 330px)'}}>
 
         {/* Search Animation - Fixed height */}
         {isSearching && (
@@ -439,7 +513,7 @@ export default function Home() {
                 <Card className="h-full flex flex-col">
                   <CardHeader className="pb-4 flex-shrink-0">
                     <CardTitle className="text-sm flex items-center gap-2">
-                      <FileText className="w-4 h-4" />
+                    <FileText className="w-4 h-4" />
                       Possibly Related ({documents.length})
                     </CardTitle>
                   </CardHeader>
@@ -455,7 +529,7 @@ export default function Home() {
                             {doc.name}
                           </h3>
                           <div className="flex items-center gap-1 lg:gap-2 text-xs text-muted-foreground">
-                            <Calendar className="w-3 h-3" />
+                  <Calendar className="w-3 h-3" />
                             <span className="text-xs">Board {doc.year}</span>
                             <Badge variant="outline" className="text-xs h-4 lg:h-5 px-1">
                               {(doc.score * 100).toFixed(0)}%
@@ -470,7 +544,7 @@ export default function Home() {
                                   className="h-auto px-2 py-1 text-xs font-mono"
                                   onClick={() => fetchDocumentDetails(doc.id)}
                                 >
-                                  <FileText className="w-3 h-3 mr-1" />
+                            <FileText className="w-3 h-3 mr-1" />
                                   View
                                 </Button>
                               </DialogTrigger>
@@ -503,10 +577,10 @@ export default function Home() {
                                         {/* Summary Section */}
                                         <div>
                                           <div className="flex items-center gap-2 mb-4">
-                                            <FileText className="w-5 h-5 text-muted-foreground" />
+                                            <FileText className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                                             <h3 className="text-lg font-medium">Document Summary</h3>
                                           </div>
-                                          <div className="bg-gradient-to-br from-muted/50 to-muted/30 rounded-lg p-6 border">
+                                          <div className="rounded-lg p-6 border bg-gray-100 dark:bg-gray-900 border-gray-200 dark:border-gray-800">
                                             <p className="text-sm leading-relaxed text-foreground">
                                               {documentDetails.summary}
                                             </p>
@@ -516,7 +590,7 @@ export default function Home() {
                                         {/* Questions Section */}
                                         <div>
                                           <div className="flex items-center gap-2 mb-4">
-                                            <Search className="w-5 h-5 text-muted-foreground" />
+                                            <Search className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                                             <h3 className="text-lg font-medium">
                                               Questions Answered ({documentDetails.questions.length})
                                             </h3>
@@ -586,7 +660,7 @@ export default function Home() {
         {!isSearching && !documents.length && !streamedResponse && (
           <div className="text-center py-16">
             <div className="w-12 h-12 bg-muted rounded-full flex items-center justify-center mx-auto mb-4">
-              <Search className="w-5 h-5 text-muted-foreground" />
+                <Search className="w-5 h-5 text-muted-foreground" />
             </div>
             {session ? (
               <>
@@ -614,20 +688,22 @@ export default function Home() {
       {/* Login Required Modal */}
       <Dialog open={showLoginModal} onOpenChange={setShowLoginModal}>
         <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-center font-mono">BLUEPRINT</DialogTitle>
+          </DialogHeader>
           <div className="text-center py-6">
             <div className="mb-6">
-              <h2 className="text-lg font-mono mb-4">BLUEPRINT</h2>
-              <p className="text-muted-foreground text-sm leading-relaxed">
-                Provides access to Aaltoes knowledge base.<br/>
+                              <p className="text-muted-foreground text-sm leading-relaxed mb-4">
+                Provides access to Aaltoes knowledge base.
+              </p>
+              <p className="text-muted-foreground text-sm">
                 <span className="font-medium">Exclusively for Aaltoes members.</span>
               </p>
             </div>
-            <div className="flex gap-3 justify-center">
+            <div className="flex gap-3 justify-center items-center">
               <Button
                 variant="default"
-                className={`h-auto px-2 py-1 text-xs font-mono w-28 ${
-                  theme === 'dark' ? 'bg-background text-foreground border border-border' : ''
-                }`}
+                className="h-auto px-4 py-2 text-sm font-mono min-w-[100px] bg-primary text-primary-foreground hover:bg-primary/90"
                 onClick={() => {
                   setShowLoginModal(false);
                   window.open('https://www.aaltoes.com/get-involved', '_blank');
@@ -637,15 +713,71 @@ export default function Home() {
               </Button>
               <Button
                 variant="default"
-                className={`h-auto px-2 py-1 text-xs font-mono w-28 ${
-                  theme === 'dark' ? 'bg-background text-foreground border border-border' : ''
-                }`}
+                className="h-auto px-4 py-2 text-sm font-mono min-w-[100px] dark:bg-white dark:text-black dark:hover:bg-gray-100"
                 onClick={() => {
                   setShowLoginModal(false);
                   signIn('google');
                 }}
               >
                 Login
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Availability Dialog */}
+      <Dialog open={showAvailabilityModal} onOpenChange={setShowAvailabilityModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-center font-mono">BLUEPRINT</DialogTitle>
+          </DialogHeader>
+          <div className="text-center py-6">
+            <div className="mb-6">
+              {availabilityType === 'public' ? (
+                <>
+                  <p className="text-muted-foreground text-sm leading-relaxed mb-4">
+                    Public version is not available yet, we work hard to filter our files for you.
+                    You can request access to private version at{' '}
+                    <a 
+                      href="mailto:board@aaltoes.com" 
+                      className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                    >
+                      board@aaltoes.com
+                    </a>
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-muted-foreground text-sm leading-relaxed mb-4">
+                    Something went wrong and private documents are not available.
+                  </p>
+                  <p className="text-muted-foreground text-sm">
+                    You can report issues at{' '}
+                    <a 
+                      href="mailto:board@aaltoes.com" 
+                      className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                    >
+                      board@aaltoes.com
+                    </a>
+                  </p>
+                </>
+              )}
+            </div>
+            <div className="flex justify-center">
+              <Button
+                variant="default"
+                className="h-auto px-4 py-2 text-sm font-mono dark:bg-white dark:text-black dark:hover:bg-gray-100"
+                onClick={() => {
+                  setShowAvailabilityModal(false);
+                  const subject = availabilityType === 'public' 
+                    ? encodeURIComponent('Blueprint - Request for private access')
+                    : encodeURIComponent('Blueprint - Report an issue');
+                  const body = encodeURIComponent('Hei! I think that ');
+                  window.open(`mailto:board@aaltoes.com?subject=${subject}&body=${body}`, '_blank');
+                }}
+              >
+                Contact Us
               </Button>
             </div>
           </div>
@@ -675,28 +807,62 @@ export default function Home() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-sm font-medium text-muted-foreground">Private:</span>
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Switch
-                          checked={isPrivate}
-                          onCheckedChange={updateIsPrivate}
-                          disabled={session?.user?.role !== 'ADMIN'}
-                          className="disabled:cursor-default disabled:opacity-100 data-[state=unchecked]:!bg-gray-500 data-[state=checked]:bg-primary"
-                        />
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p className="text-xs max-w-xs">
-                          Private documents may contain sensitive information and are available only for the board.
-                        </p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                </div>
+
               </div>
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-medium text-muted-foreground mr-1">Type:</span>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 px-2 text-xs font-mono mr-2 justify-between w-36"
+                    >
+                      <span>
+                        {selectedDataTypes.length === 0 
+                          ? 'All' 
+                          : selectedDataTypes.length === 1 
+                            ? availableDataTypes.find(dt => dt.value === selectedDataTypes[0])?.label
+                            : `${selectedDataTypes.length} selected`
+                        }
+                      </span>
+                      <ChevronsUpDown 
+                        className="h-3 w-3 ml-1" 
+                        style={{ color: theme === 'dark' ? '#ffffff' : '#000000' }}
+                      />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[200px] p-2" align="start" side="top">
+                    <Command className="bg-transparent">
+                      <CommandList>
+                        <CommandGroup>
+                          {availableDataTypes.filter(dt => dt.value !== 'all').map((dataType) => (
+                            <CommandItem
+                              key={dataType.value}
+                              onSelect={() => {
+                                setSelectedDataTypes(prev => 
+                                  prev.includes(dataType.value)
+                                    ? prev.filter(t => t !== dataType.value)
+                                    : [...prev, dataType.value]
+                                );
+                              }}
+                              className="text-xs py-2 px-2 rounded-md cursor-pointer data-[selected=true]:bg-transparent data-[selected=true]:text-foreground flex justify-between items-center"
+                            >
+                              <span className="font-mono text-xs">{dataType.label}</span>
+                              <Check
+                                className={`h-3 w-3 text-black dark:text-white ${
+                                  selectedDataTypes.includes(dataType.value) ? "opacity-100" : "opacity-0"
+                                }`}
+                              />
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+              </div>
+              <div className="flex items-center gap-2 mb-2 mt-2">
                 <span className="text-sm font-medium text-muted-foreground shrink-0">Board:</span>
                 <div className="flex gap-1 overflow-x-auto scrollbar-hide">
                   {availableYears.map((year) => (
@@ -721,61 +887,10 @@ export default function Home() {
                       onClick={() => setSelectedYears([])}
                       className="h-8 w-8 p-0 font-mono shrink-0 touch-manipulation"
                     >
-                      <X className="h-4 w-4" />
+                <X className="h-4 w-4" />
                     </Button>
                   )}
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-muted-foreground shrink-0">Type:</span>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-8 px-3 text-xs justify-between min-w-[120px] touch-manipulation"
-                    >
-                      <span>
-                        {selectedDataTypes.length === 0 
-                          ? 'All Types' 
-                          : selectedDataTypes.length === 1 
-                            ? availableDataTypes.find(dt => dt.value === selectedDataTypes[0])?.label
-                            : `${selectedDataTypes.length} selected`
-                        }
-                      </span>
-                      <ChevronsUpDown className="h-3 w-3 opacity-50" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-[200px] p-0" align="start">
-                    <Command>
-                      <CommandList>
-                        <CommandGroup>
-                          {availableDataTypes.filter(dt => dt.value !== 'all').map((dataType) => (
-                            <CommandItem
-                              key={dataType.value}
-                              onSelect={() => {
-                                setSelectedDataTypes(prev => 
-                                  prev.includes(dataType.value)
-                                    ? prev.filter(t => t !== dataType.value)
-                                    : [...prev, dataType.value]
-                                );
-                              }}
-                              className="text-xs"
-                            >
-                              <Check
-                                className={`mr-2 h-3 w-3 ${
-                                  selectedDataTypes.includes(dataType.value) ? "opacity-100" : "opacity-0"
-                                }`}
-                              />
-                              <span className="mr-2">{dataType.icon}</span>
-                              {dataType.label}
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      </CommandList>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
               </div>
             </div>
             
@@ -794,26 +909,59 @@ export default function Home() {
                   ))}
                 </SelectContent>
               </Select>
-              <div className="flex items-center gap-2 mr-4">
-                <span className="text-sm font-medium text-muted-foreground mr-1">Private:</span>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Switch
-                        checked={isPrivate}
-                        onCheckedChange={updateIsPrivate}
-                        disabled={session?.user?.role !== 'ADMIN'}
-                        className="disabled:cursor-default disabled:opacity-100 data-[state=unchecked]:!bg-gray-500 data-[state=checked]:bg-primary"
-                      />
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p className="text-xs max-w-xs">
-                        Private documents may contain sensitive information and are available only for the board.
-                      </p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
+
+              <span className="text-sm font-medium text-muted-foreground mr-1">Type:</span>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-xs font-mono mr-2 justify-between w-36"
+                  >
+                    <span>
+                      {selectedDataTypes.length === 0 
+                        ? 'All' 
+                        : selectedDataTypes.length === 1 
+                          ? availableDataTypes.find(dt => dt.value === selectedDataTypes[0])?.label
+                          : `${selectedDataTypes.length} selected`
+                      }
+                    </span>
+                    <ChevronsUpDown 
+                      className="h-3 w-3 ml-1" 
+                      style={{ color: theme === 'dark' ? '#ffffff' : '#000000' }}
+                    />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[200px] p-2" align="start" side="top">
+                  <Command className="bg-transparent">
+                    <CommandList>
+                      <CommandGroup>
+                        {availableDataTypes.filter(dt => dt.value !== 'all').map((dataType) => (
+                          <CommandItem
+                            key={dataType.value}
+                            onSelect={() => {
+                              setSelectedDataTypes(prev => 
+                                prev.includes(dataType.value)
+                                  ? prev.filter(t => t !== dataType.value)
+                                  : [...prev, dataType.value]
+                              );
+                            }}
+                            className="text-xs py-2 px-2 rounded-md cursor-pointer data-[selected=true]:bg-transparent data-[selected=true]:text-foreground flex justify-between items-center"
+                          >
+                            <span className="font-mono text-xs">{dataType.label}</span>
+                            <Check
+                              className={`h-3 w-3 text-black dark:text-white ${
+                                selectedDataTypes.includes(dataType.value) ? "opacity-100" : "opacity-0"
+                              }`}
+                            />
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+
               <span className="text-sm font-medium text-muted-foreground mr-1">Board:</span>
               {availableYears.map((year) => (
                 <Button
@@ -840,55 +988,6 @@ export default function Home() {
                   <X className="h-3 w-3" />
                 </Button>
               )}
-              <span className="text-sm font-medium text-muted-foreground mr-1 ml-4">Type:</span>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-6 px-2 text-xs justify-between min-w-[100px] mr-2"
-                  >
-                    <span>
-                      {selectedDataTypes.length === 0 
-                        ? 'All Types' 
-                        : selectedDataTypes.length === 1 
-                          ? availableDataTypes.find(dt => dt.value === selectedDataTypes[0])?.label
-                          : `${selectedDataTypes.length} selected`
-                      }
-                    </span>
-                    <ChevronsUpDown className="h-3 w-3 opacity-50 ml-1" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-[160px] p-0" align="start">
-                  <Command>
-                    <CommandList>
-                      <CommandGroup>
-                        {availableDataTypes.filter(dt => dt.value !== 'all').map((dataType) => (
-                          <CommandItem
-                            key={dataType.value}
-                            onSelect={() => {
-                              setSelectedDataTypes(prev => 
-                                prev.includes(dataType.value)
-                                  ? prev.filter(t => t !== dataType.value)
-                                  : [...prev, dataType.value]
-                              );
-                            }}
-                            className="text-xs"
-                          >
-                            <Check
-                              className={`mr-2 h-3 w-3 ${
-                                selectedDataTypes.includes(dataType.value) ? "opacity-100" : "opacity-0"
-                              }`}
-                            />
-                            <span className="mr-2">{dataType.icon}</span>
-                            {dataType.label}
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
             </div>
           </div>
           
@@ -909,7 +1008,7 @@ export default function Home() {
               size="sm"
             >
               {isSearching && !isStreaming ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
+              <Loader2 className="w-5 h-5 animate-spin" />
               ) : isStreaming ? (
                 <Square className="w-4 h-4" />
               ) : (
