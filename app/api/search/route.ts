@@ -180,14 +180,14 @@ export async function POST(request: NextRequest) {
       
       console.log('Combined filter for Pinecone query:', JSON.stringify(combinedFilter, null, 2));
 
-      const [summaryResults, questionResults] = await Promise.all([
+      const [summaryResults, questionResults, chunkSearchResults] = await Promise.all([
         // Search summaries with combined filter
         summaryIndex.query({
           vector: questionEmbedding,
           topK: searchTopK,
           includeMetadata: true,
           filter: combinedFilter,
-        }).catch(error => {
+        }).catch((error: any) => {
           if (error.message?.includes('404') || error.message?.includes('not found')) {
             if (isPrivate) {
               throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
@@ -203,7 +203,23 @@ export async function POST(request: NextRequest) {
           topK: searchTopK,
           includeMetadata: true,
           filter: combinedFilter,
-        }).catch(error => {
+        }).catch((error: any) => {
+          if (error.message?.includes('404') || error.message?.includes('not found')) {
+            if (isPrivate) {
+              throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
+            } else {
+              throw new Error('Public version is not available yet, we work hard to filter our files for you. You can request access to private version at board@aaltoes.com');
+            }
+          }
+          throw error;
+        }),
+        // Search chunks directly for content that might not be in summaries/questions (e.g., names, specific details)
+        chunkIndex.query({
+          vector: questionEmbedding,
+          topK: searchTopK * 2, // Search more chunks to find diverse documents
+          includeMetadata: true,
+          filter: combinedFilter,
+        }).catch((error: any) => {
           if (error.message?.includes('404') || error.message?.includes('not found')) {
             if (isPrivate) {
               throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
@@ -217,6 +233,7 @@ export async function POST(request: NextRequest) {
 
       console.log('Summary results count:', summaryResults.matches?.length);
       console.log('Question results count:', questionResults.matches?.length);
+      console.log('Direct chunk search results count:', chunkSearchResults.matches?.length);
       
       // Debug: Show some example results to verify filter is working
       if (summaryResults.matches?.length > 0) {
@@ -233,22 +250,23 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // Step 5: Create hybrid document ranking combining summaries and questions
+      // Step 5: Create hybrid document ranking combining summaries, questions, and direct chunk matches
       const processedSummaries = summaryResults.matches || [];
       const processedQuestions = questionResults.matches || [];
+      const processedChunks = chunkSearchResults.matches || [];
 
-      // Create hybrid scoring: combine summary similarity with question relevance
-      const documentScores = new Map<string, {summary: number, question: number, metadata: any}>();
+      // Create hybrid scoring: combine summary, question, and chunk relevance
+      const documentScores = new Map<string, {summary: number, question: number, chunk: number, metadata: any}>();
 
       // Add summary scores (summaries use "id" field)
       console.log('Processing summaries:', processedSummaries.length);
-      processedSummaries.forEach((match: any, index: number) => {
+      processedSummaries.forEach((match: any) => {
         const docId = match.metadata?.id; // Summaries use "id"
-        console.log(`Summary ${index}: docId=${docId}, name=${match.metadata?.name}, score=${match.score}`);
         if (docId) {
           documentScores.set(docId, {
             summary: match.score || 0,
             question: 0,
+            chunk: 0,
             metadata: match.metadata
           });
         }
@@ -256,48 +274,69 @@ export async function POST(request: NextRequest) {
 
       // Add question scores (questions use "doc_id" field)
       console.log('Processing questions:', processedQuestions.length);
-      processedQuestions.forEach((match: any, index: number) => {
+      processedQuestions.forEach((match: any) => {
         const docId = match.metadata?.doc_id; // Questions use "doc_id"
-        console.log(`Question ${index}: docId=${docId}, name=${match.metadata?.name}, score=${match.score}`);
         if (docId && documentScores.has(docId)) {
           const existing = documentScores.get(docId)!;
-          existing.question = match.score || 0;
-          console.log(`Enhanced existing doc ${docId} with question score ${match.score}`);
+          existing.question = Math.max(existing.question, match.score || 0);
         } else if (docId) {
           documentScores.set(docId, {
             summary: 0,
             question: match.score || 0,
+            chunk: 0,
             metadata: match.metadata
           });
-          console.log(`Added new doc ${docId} from questions only`);
         }
       });
 
-      console.log('Total unique documents after combining:', documentScores.size);
+      // Add chunk scores (chunks use "doc_id" field) - this catches content like names that might not be in summaries
+      console.log('Processing direct chunk matches:', processedChunks.length);
+      processedChunks.forEach((match: any) => {
+        const docId = match.metadata?.doc_id || match.metadata?.id;
+        if (docId && documentScores.has(docId)) {
+          const existing = documentScores.get(docId)!;
+          // Keep the highest chunk score for this document
+          existing.chunk = Math.max(existing.chunk, match.score || 0);
+        } else if (docId) {
+          // Document found via chunk search but not in summaries/questions - important for specific content like names
+          documentScores.set(docId, {
+            summary: 0,
+            question: 0,
+            chunk: match.score || 0,
+            metadata: match.metadata
+          });
+          console.log(`Added new doc ${docId} from chunk search (content match)`);
+        }
+      });
 
-      // Calculate hybrid scores (weighted combination with boost for dual-index matches)
+      console.log('Total unique documents after combining all sources:', documentScores.size);
+
+      // Calculate hybrid scores (weighted combination with boost for multi-index matches)
       const hybridDocuments = Array.from(documentScores.entries()).map(([docId, scores]) => {
-        const hasBothScores = scores.summary > 0 && scores.question > 0;
-        // Base hybrid score: 50% summary + 50% question (balanced approach)
-        let hybridScore = (scores.summary * 0.5) + (scores.question * 0.5);
-        // Boost documents that appear in both indexes (higher confidence)
-        if (hasBothScores) {
-          hybridScore *= 1.2; // 20% boost
+        const sourceCount = (scores.summary > 0 ? 1 : 0) + (scores.question > 0 ? 1 : 0) + (scores.chunk > 0 ? 1 : 0);
+        // Base hybrid score: weighted combination of all three sources
+        // Chunk gets high weight because it directly matches content (like names)
+        let hybridScore = (scores.summary * 0.3) + (scores.question * 0.3) + (scores.chunk * 0.4);
+        // Boost documents that appear in multiple indexes (higher confidence)
+        if (sourceCount >= 2) {
+          hybridScore *= 1.1 + (sourceCount * 0.1); // 1.2x for 2 sources, 1.3x for 3 sources
         }
         return {
           docId,
           summaryScore: scores.summary,
           questionScore: scores.question,
+          chunkScore: scores.chunk,
           hybridScore,
           metadata: scores.metadata
         };
       }).sort((a, b) => b.hybridScore - a.hybridScore).slice(0, searchTopK);
 
-      console.log('Top hybrid documents:', 
+      console.log('Top hybrid documents:',
         hybridDocuments.slice(0, 5).map((doc: any) => ({
           name: doc.metadata?.name,
           summaryScore: doc.summaryScore.toFixed(3),
           questionScore: doc.questionScore.toFixed(3),
+          chunkScore: doc.chunkScore.toFixed(3),
           hybridScore: doc.hybridScore.toFixed(3),
           year: doc.metadata?.year
         }))
@@ -306,17 +345,19 @@ export async function POST(request: NextRequest) {
       // Get document IDs from hybrid ranking
       let docIds = hybridDocuments.map(doc => doc.docId);
 
-      // Fallback: if hybrid approach yields no results, use summaries directly
-      if (docIds.length === 0 && processedSummaries.length > 0) {
-        console.log('Hybrid approach yielded no results, falling back to summaries only');
-        docIds = processedSummaries.map((match: any) => match.metadata?.id).filter(Boolean); // Summaries use "id"
+      // Fallback: if hybrid approach yields no results, use chunk search results directly
+      if (docIds.length === 0 && processedChunks.length > 0) {
+        console.log('Hybrid approach yielded no results, falling back to chunk search');
+        const uniqueDocIds = new Set<string>();
+        processedChunks.forEach((match: any) => {
+          const docId = match.metadata?.doc_id || match.metadata?.id;
+          if (docId) uniqueDocIds.add(docId);
+        });
+        docIds = Array.from(uniqueDocIds);
       }
 
-      console.log('Processing documents from hybrid/summaries:', docIds.length);
+      console.log('Processing documents from hybrid ranking:', docIds.length);
 
-      // Step 6: Search chunks for each document - 1 chunk per document for diversity
-      const maxChunksPerDoc = 1; // Changed from 10 to 1 for maximum document diversity
-      
       console.log(`Getting chunks for ${docIds.length} documents`);
       
       for (const docId of docIds) {
@@ -425,32 +466,41 @@ export async function POST(request: NextRequest) {
           score: hybridDoc.hybridScore || 0, // Hybrid similarity score
           summaryScore: hybridDoc.summaryScore || 0,
           questionScore: hybridDoc.questionScore || 0,
+          chunkScore: hybridDoc.chunkScore || 0,
           numQuestions: hybridDoc.metadata?.num_questions || 0,
           // Extract links from new structure
-          link: hybridDoc.metadata?.url || 
-                hybridDoc.metadata?.google_drive_link || 
-                hybridDoc.metadata?.drive_link || 
-                hybridDoc.metadata?.link || 
+          link: hybridDoc.metadata?.url ||
+                hybridDoc.metadata?.google_drive_link ||
+                hybridDoc.metadata?.drive_link ||
+                hybridDoc.metadata?.link ||
                 null,
         }));
-      } else if (processedSummaries.length > 0) {
-        // Fallback to summaries only
-        console.log('Using summaries fallback for document preparation');
-        documentsBeforeYearFilter = processedSummaries.map((match: any) => ({
-          id: match.metadata?.id || '', // Summaries use "id"
-          name: match.metadata?.name || 'Untitled',
-          year: match.metadata?.year ? String(match.metadata.year) : 'unknown',
-          score: match.score || 0, // Summary similarity score
-          summaryScore: match.score || 0,
-          questionScore: 0,
-          numQuestions: match.metadata?.num_questions || 0,
-          // Extract links from new structure
-          link: match.metadata?.url || 
-                match.metadata?.google_drive_link || 
-                match.metadata?.drive_link || 
-                match.metadata?.link || 
-                null,
-        }));
+      } else if (processedChunks.length > 0) {
+        // Fallback to chunk search results (catches names and specific content)
+        console.log('Using chunk search fallback for document preparation');
+        const seenDocIds = new Set<string>();
+        documentsBeforeYearFilter = processedChunks
+          .filter((match: any) => {
+            const docId = match.metadata?.doc_id || match.metadata?.id;
+            if (!docId || seenDocIds.has(docId)) return false;
+            seenDocIds.add(docId);
+            return true;
+          })
+          .map((match: any) => ({
+            id: match.metadata?.doc_id || match.metadata?.id || '',
+            name: match.metadata?.name || 'Untitled',
+            year: match.metadata?.year ? String(match.metadata.year) : 'unknown',
+            score: match.score || 0,
+            summaryScore: 0,
+            questionScore: 0,
+            chunkScore: match.score || 0,
+            numQuestions: match.metadata?.num_questions || 0,
+            link: match.metadata?.url ||
+                  match.metadata?.google_drive_link ||
+                  match.metadata?.drive_link ||
+                  match.metadata?.link ||
+                  null,
+          }));
       }
 
       console.log('Documents before year filtering:', documentsBeforeYearFilter.map((d: any) => ({ 
