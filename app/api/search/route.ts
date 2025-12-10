@@ -275,15 +275,23 @@ export async function POST(request: NextRequest) {
 
       console.log('Total unique documents after combining:', documentScores.size);
 
-      // Calculate hybrid scores (weighted combination)
-      const hybridDocuments = Array.from(documentScores.entries()).map(([docId, scores]) => ({
-        docId,
-        summaryScore: scores.summary,
-        questionScore: scores.question,
-        // Hybrid score: 30% summary + 70% question similarity
-        hybridScore: (scores.summary * 0.3) + (scores.question * 0.7),
-        metadata: scores.metadata
-      })).sort((a, b) => b.hybridScore - a.hybridScore).slice(0, searchTopK);
+      // Calculate hybrid scores (weighted combination with boost for dual-index matches)
+      const hybridDocuments = Array.from(documentScores.entries()).map(([docId, scores]) => {
+        const hasBothScores = scores.summary > 0 && scores.question > 0;
+        // Base hybrid score: 50% summary + 50% question (balanced approach)
+        let hybridScore = (scores.summary * 0.5) + (scores.question * 0.5);
+        // Boost documents that appear in both indexes (higher confidence)
+        if (hasBothScores) {
+          hybridScore *= 1.2; // 20% boost
+        }
+        return {
+          docId,
+          summaryScore: scores.summary,
+          questionScore: scores.question,
+          hybridScore,
+          metadata: scores.metadata
+        };
+      }).sort((a, b) => b.hybridScore - a.hybridScore).slice(0, searchTopK);
 
       console.log('Top hybrid documents:', 
         hybridDocuments.slice(0, 5).map((doc: any) => ({
@@ -313,15 +321,18 @@ export async function POST(request: NextRequest) {
       
       for (const docId of docIds) {
         console.log(`Searching chunks for document: ${docId}`);
-        
-        // Search chunks (chunks use "id" field)
+
+        // Search chunks (chunks use "doc_id" field to reference parent document)
         let chunkResults;
         try {
-          // Apply combined filter to chunks as well
-          const chunkFilter = combinedFilter ? { ...combinedFilter, id: docId } : { id: docId };
+          // Build filter for this specific document's chunks
+          const docFilter = { doc_id: docId };
+          const chunkFilter = combinedFilter
+            ? { $and: [docFilter, combinedFilter] }
+            : docFilter;
           chunkResults = await chunkIndex.query({
             vector: questionEmbedding,
-            topK: 1, // Only get 1 chunk per document
+            topK: 3, // Get top 3 chunks per document, then pick best
             includeMetadata: true,
             filter: chunkFilter,
           });
@@ -338,55 +349,10 @@ export async function POST(request: NextRequest) {
         
         console.log(`Chunk results for ${docId}:`, chunkResults.matches?.length || 0);
         
-        // If still no results, try without any filter to get relevant chunks
+        // If no results with doc_id filter, skip this document (don't use unrelated chunks)
         if (!chunkResults.matches?.length) {
-          console.log(`No chunks found with filters for ${docId}, trying semantic search without filter`);
-          try {
-            // Apply combined filter even in fallback semantic search
-            chunkResults = await chunkIndex.query({
-              vector: questionEmbedding,
-              topK: 1, // Only get 1 chunk per document
-              includeMetadata: true,
-              filter: combinedFilter, // Apply combined filter for semantic search too
-            });
-          } catch (error: any) {
-            if (error.message?.includes('404') || error.message?.includes('not found')) {
-              if (isPrivate) {
-                throw new Error('Private document access is not implemented yet. Please contact administrator to set up private indexes.');
-              } else {
-                throw new Error('Public version is not available yet, we work hard to filter our files for you. You can request access to private version at board@aaltoes.com');
-              }
-            }
-            throw error;
-          }
-          
-          // Filter the results to only include chunks that might be from our target documents
-          if (chunkResults.matches?.length) {
-            const filteredMatches = chunkResults.matches.filter(match => {
-              const chunkDocId = match.metadata?.doc_id || match.metadata?.id;
-              const chunkName = match.metadata?.name;
-              const chunkYear = String(match.metadata?.year || '');
-              
-              // Check if this chunk belongs to any of our target documents
-              const belongsToTargetDoc = docIds.some(targetDocId => 
-                chunkDocId === targetDocId || 
-                documents.some(doc => doc.name === chunkName)
-              );
-              
-              // If years are specified, also check if chunk is from the right year
-              if (years.length > 0) {
-                const isFromCorrectYear = years.includes(chunkYear) || years.includes(String(parseInt(chunkYear)));
-                return belongsToTargetDoc && isFromCorrectYear;
-              }
-              
-              return belongsToTargetDoc;
-            });
-            
-            if (filteredMatches.length > 0) {
-              chunkResults.matches = filteredMatches.slice(0, 1); // Only take 1 chunk
-              console.log(`Found ${filteredMatches.length} chunks via semantic search for document-related content`);
-            }
-          }
+          console.log(`No chunks found for document ${docId}, skipping`);
+          continue;
         }
         
         console.log(`Final chunk results for ${docId}:`, chunkResults.matches?.length || 0);
