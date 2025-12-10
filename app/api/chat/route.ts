@@ -51,7 +51,7 @@ Answer:`;
 
     // Create streaming response
     const stream = await openai.chat.completions.create({
-      model: 'gpt-5-nano-2025-08-07',
+      model: 'gpt-5-mini-2025-08-07',
       messages: [{ role: 'user', content: prompt }],
       stream: true,
     });
