@@ -51,10 +51,9 @@ Answer:`;
 
     // Create streaming response
     const stream = await openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: 'gpt-5-nano-2025-08-07',
       messages: [{ role: 'user', content: prompt }],
       stream: true,
-      temperature: 0,
     });
 
     // Create a ReadableStream to handle the OpenAI stream

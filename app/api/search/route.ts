@@ -26,7 +26,9 @@ async function getEmbedding(text: string) {
 
 export async function POST(request: NextRequest) {
   try {
-    const { question, selectedYears, selectedDataTypes, topK, isPrivate } = await request.json();
+    const { question, selectedYears, selectedDataTypes, topK } = await request.json();
+    // Always use private indexes for now (public indexes not available)
+    const isPrivate = true;
     
     if (!question) {
       return NextResponse.json({ error: 'Question is required' }, { status: 400 });

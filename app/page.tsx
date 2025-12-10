@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { Search, FileText, Calendar, ExternalLink, Loader2, X, LogOut, Sun, Moon, Square } from 'lucide-react';
+import { useState, useRef, useEffect, memo } from 'react';
+import { Search, FileText, Calendar, ExternalLink, Loader2, X, Sun, Moon, Square } from 'lucide-react';
 import { useSession, signIn, signOut } from 'next-auth/react';
 import { useTheme } from '@/components/theme-provider';
 import ReactMarkdown from 'react-markdown';
@@ -10,12 +10,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Check, ChevronDown, ChevronsUpDown } from 'lucide-react';
-import { Switch } from '@/components/ui/switch';
+import { Check, ChevronsUpDown } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 
 interface Document {
   id: string;
@@ -40,6 +37,51 @@ interface DocumentDetails {
   questions: string[];
 }
 
+// Animated response component with line-by-line reveal - memoized to prevent re-animation on typing
+const AnimatedResponse = memo(function AnimatedResponse({ content, animationKey }: { content: string; animationKey: number }) {
+  let lineIndex = 0;
+  const getLineDelay = () => {
+    const delay = lineIndex * 80;
+    lineIndex++;
+    return delay;
+  };
+
+  return (
+    <ReactMarkdown
+      key={animationKey}
+      className="text-base leading-8 text-foreground"
+      components={{
+        h1: ({ children }) => <h1 className="text-2xl font-semibold mb-4 mt-8 first:mt-0 text-foreground tracking-tight animate-line-reveal" style={{ '--line-delay': `${getLineDelay()}ms` } as React.CSSProperties}>{children}</h1>,
+        h2: ({ children }) => <h2 className="text-xl font-semibold mb-3 mt-6 first:mt-0 text-foreground tracking-tight animate-line-reveal" style={{ '--line-delay': `${getLineDelay()}ms` } as React.CSSProperties}>{children}</h2>,
+        h3: ({ children }) => <h3 className="text-lg font-medium mb-2 mt-5 first:mt-0 text-foreground animate-line-reveal" style={{ '--line-delay': `${getLineDelay()}ms` } as React.CSSProperties}>{children}</h3>,
+        p: ({ children }) => <p className="mb-4 last:mb-0 text-pretty text-foreground/90 animate-line-reveal" style={{ '--line-delay': `${getLineDelay()}ms` } as React.CSSProperties}>{children}</p>,
+        ul: ({ children }) => <ul className="mb-4 pl-6 space-y-2 list-disc marker:text-foreground/40 animate-line-reveal" style={{ '--line-delay': `${getLineDelay()}ms` } as React.CSSProperties}>{children}</ul>,
+        ol: ({ children }) => <ol className="mb-4 pl-6 space-y-2 list-decimal marker:text-foreground/40 animate-line-reveal" style={{ '--line-delay': `${getLineDelay()}ms` } as React.CSSProperties}>{children}</ol>,
+        li: ({ children }) => <li className="text-base leading-8 pl-1 text-foreground/90">{children}</li>,
+        strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
+        em: ({ children }) => <em className="italic text-foreground/80">{children}</em>,
+        code: ({ children }) => <code className="bg-secondary text-foreground px-1.5 py-0.5 rounded text-sm font-mono">{children}</code>,
+        pre: ({ children }) => <pre className="bg-secondary border border-border rounded-lg p-4 text-sm overflow-x-auto mb-4 font-mono animate-line-reveal" style={{ '--line-delay': `${getLineDelay()}ms` } as React.CSSProperties}>{children}</pre>,
+        blockquote: ({ children }) => <blockquote className="border-l-2 border-foreground/20 pl-4 my-4 italic text-foreground/70 animate-line-reveal" style={{ '--line-delay': `${getLineDelay()}ms` } as React.CSSProperties}>{children}</blockquote>,
+        a: ({ children, href }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-foreground underline decoration-foreground/30 hover:decoration-foreground/60 underline-offset-2 transition-colors inline-flex items-center gap-1 font-medium"
+          >
+            {children}
+            <ExternalLink className="w-3.5 h-3.5 inline flex-shrink-0 opacity-50" />
+          </a>
+        ),
+        hr: () => <hr className="my-6 border-border" />,
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+});
+
 export default function Home() {
   const { data: session, status } = useSession();
   const { theme, setTheme } = useTheme();
@@ -51,6 +93,9 @@ export default function Home() {
   const [searchData, setSearchData] = useState<SearchResponse | null>(null);
   const [documentDetails, setDocumentDetails] = useState<DocumentDetails | null>(null);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+  const [submittedQuestion, setSubmittedQuestion] = useState('');
+  const [animationKey, setAnimationKey] = useState(0);
+  const [finalResponse, setFinalResponse] = useState('');
   const [selectedYears, setSelectedYears] = useState<string[]>([]);
   const [selectedDataTypes, setSelectedDataTypes] = useState<string[]>([]);
   const [topK, setTopK] = useState<number>(25);
@@ -162,7 +207,7 @@ export default function Home() {
 
   const handleSearch = async () => {
     if (!question.trim()) return;
-    
+
     // Check if user is logged in
     if (!session) {
       setShowLoginModal(true);
@@ -186,7 +231,10 @@ export default function Home() {
     setIsSearching(true);
     setDocuments([]);
     setStreamedResponse('');
+    setFinalResponse('');
     setSearchData(null);
+    setSubmittedQuestion(question.trim());
+    setAnimationKey(prev => prev + 1);
 
     // Create abort controller for this request
     const abortController = new AbortController();
@@ -194,10 +242,11 @@ export default function Home() {
 
     try {
       // Step 1: Search for relevant documents
+      // Always use private indexes for now (public indexes not available)
       const searchResponse = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, selectedYears, selectedDataTypes, topK, isPrivate }),
+        body: JSON.stringify({ question, selectedYears, selectedDataTypes, topK, isPrivate: true }),
         signal: abortController.signal,
       });
 
@@ -223,16 +272,16 @@ export default function Home() {
       setSearchData(searchResult);
       setIsSearching(false);
 
-      // Step 2: Stream the LLM response
+      // Step 2: Stream the LLM response (collect in background, show when done)
       if (searchResult.chunks.length > 0) {
         setIsStreaming(true);
-        
+
         const chatResponse = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            question: searchResult.question, 
-            chunks: searchResult.chunks 
+          body: JSON.stringify({
+            question: searchResult.question,
+            chunks: searchResult.chunks
           }),
           signal: abortController.signal,
         });
@@ -246,7 +295,8 @@ export default function Home() {
 
         if (reader) {
           let buffer = '';
-          
+          let fullResponse = '';
+
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -259,13 +309,17 @@ export default function Home() {
               if (line.startsWith('data: ')) {
                 const data = line.slice(6);
                 if (data === '[DONE]') {
+                  // Set final response with animation when complete
+                  setFinalResponse(fullResponse);
                   setIsStreaming(false);
                   return;
                 }
                 try {
                   const parsed = JSON.parse(data);
                   if (parsed.content) {
-                    setStreamedResponse(prev => prev + parsed.content);
+                    fullResponse += parsed.content;
+                    // Show progress indicator while streaming
+                    setStreamedResponse(fullResponse);
                   }
                 } catch (e) {
                   // Skip invalid JSON
@@ -273,15 +327,13 @@ export default function Home() {
               }
             }
           }
+          // If we exit the loop without [DONE], still set the response
+          if (fullResponse) {
+            setFinalResponse(fullResponse);
+          }
         }
       } else {
-        // Check if we're in public mode and got no results - might be unavailable
-        if (!isPrivate) {
-          setAvailabilityType('public');
-          setShowAvailabilityModal(true);
-          return;
-        }
-        setStreamedResponse('I could not find any documents related to your question.');
+        setFinalResponse('I could not find any documents related to your question.');
       }
     } catch (error: any) {
       console.error('Error:', error);
@@ -289,7 +341,7 @@ export default function Home() {
         // Don't replace content on abort, user already stopped it manually
         console.log('Search was cancelled by user');
       } else {
-        setStreamedResponse('An error occurred while processing your question.');
+        setFinalResponse('An error occurred while processing your question.');
       }
     } finally {
       setIsSearching(false);
@@ -309,16 +361,6 @@ export default function Home() {
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      // Prevent search if already searching or streaming
-      if (!isSearching && !isStreaming) {
-        handleSearch();
-      }
-    }
-  };
-
   if (status === "loading") {
     return (
       <main className="h-screen bg-background flex items-center justify-center">
@@ -332,50 +374,82 @@ export default function Home() {
 
   return (
     <main className="h-screen bg-background flex flex-col overflow-hidden">
-      {/* Full-width Header */}
-      <div className="w-full bg-background">
-        {/* First Row: Logo, BLUEPRINT, Auth Buttons */}
-        <div className="relative flex items-center justify-between py-4 lg:py-6 px-4 lg:px-6 mt-4">
-          {/* Logo - Left side */}
-          <div className="flex items-center">
-            <img 
-              src={theme === 'dark' ? "https://www.aaltoes.com/bank/aaltoes_white.svg" : "https://www.aaltoes.com/bank/aaltoes_dark.svg"}
-              alt="Aaltoes" 
-              className="h-6 lg:h-7"
-            />
-          </div>
-          
-          {/* Absolutely Centered BLUEPRINT Title */}
-          <div className="absolute left-1/2 transform -translate-x-1/2">
-            <h1 className="text-2xl lg:text-3xl font-bold text-foreground">
-              BLUEPRINT
-            </h1>
-          </div>
+      {/* Compact Header Bar */}
+      <div className="w-full bg-background pt-8 lg:pt-12 pb-4">
+        <div className="max-w-6xl mx-auto px-4 lg:px-6">
+          <div className="flex items-center justify-between h-10">
+            {/* Logo - Left side */}
+            <div className="flex items-center gap-4">
+              <img
+                src={theme === 'dark' ? "https://www.aaltoes.com/bank/aaltoes_white.svg" : "https://www.aaltoes.com/bank/aaltoes_dark.svg"}
+                alt="Aaltoes"
+                className="h-6 opacity-70"
+              />
+              <div className="h-5 w-px bg-border" />
+              <h1 className="text-base font-semibold text-foreground tracking-tight">
+                BLUEPRINT
+              </h1>
+            </div>
 
-          {/* Theme Toggle and Auth Button - Right side */}
-          <div className="flex items-center gap-3">
-              {/* Theme Toggle Button */}
+            {/* Center: Private/Public Toggle */}
+            <div className="hidden sm:flex absolute left-1/2 transform -translate-x-1/2">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="inline-flex rounded-md border border-border bg-secondary/50 p-0.5">
+                      <button
+                        className={`px-3 py-1.5 text-sm font-medium rounded transition-all ${
+                          !isPrivate
+                            ? 'bg-foreground text-background'
+                            : 'text-foreground/50 hover:text-foreground'
+                        } ${session?.user?.role !== 'ADMIN' ? 'cursor-default' : 'cursor-pointer'}`}
+                        onClick={() => session?.user?.role === 'ADMIN' && updateIsPrivate(false)}
+                        disabled={session?.user?.role !== 'ADMIN'}
+                      >
+                        Public
+                      </button>
+                      <button
+                        className={`px-3 py-1.5 text-sm font-medium rounded transition-all ${
+                          isPrivate
+                            ? 'bg-foreground text-background'
+                            : 'text-foreground/50 hover:text-foreground'
+                        } ${session?.user?.role !== 'ADMIN' ? 'cursor-default' : 'cursor-pointer'}`}
+                        onClick={() => session?.user?.role === 'ADMIN' && updateIsPrivate(true)}
+                        disabled={session?.user?.role !== 'ADMIN'}
+                      >
+                        Private
+                      </button>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-xs">
+                    <p className="text-xs">
+                      Private documents are available only for the board.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </div>
+
+            {/* Right side: Theme + Auth */}
+            <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-auto px-2 py-1 text-xs font-mono w-10"
+                className="h-9 w-9 p-0 rounded-md text-foreground/50 hover:text-foreground hover:bg-secondary"
                 onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
               >
                 {theme === 'light' ? (
-                  <Moon className="w-3 h-3" />
+                  <Moon className="w-5 h-5" />
                 ) : (
-                  <Sun className="w-3 h-3" />
+                  <Sun className="w-5 h-5" />
                 )}
               </Button>
-              
-              {/* Auth Button */}
+
               {session ? (
                 <Button
-                  variant="default"
+                  variant="ghost"
                   size="sm"
-                  className={`h-auto px-2 py-1 text-xs font-mono w-14 ${
-                    theme === 'dark' ? 'bg-background text-foreground border border-border' : ''
-                  }`}
+                  className="h-9 px-4 text-sm font-medium text-foreground/70 hover:text-foreground hover:bg-secondary"
                   onClick={() => signOut()}
                 >
                   Logout
@@ -384,168 +458,193 @@ export default function Home() {
                 <Button
                   variant="default"
                   size="sm"
-                  className={`h-auto px-2 py-1 text-xs font-mono w-14 ${
-                    theme === 'dark' ? 'bg-background text-foreground border border-border' : ''
-                  }`}
+                  className="h-9 px-4 text-sm font-medium"
                   onClick={() => signIn('google')}
                 >
                   Login
                 </Button>
               )}
             </div>
-        </div>
-        
-        {/* Second Row: Centered Private/Public Toggle */}
-        <div className="flex justify-center pb-4 px-4 lg:px-6">
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="inline-flex rounded-lg border border-border bg-background p-1">
-                  <button
-                    className={`px-2 py-1 text-xs font-mono rounded-md transition-colors ${
-                      !isPrivate 
-                        ? 'bg-blue-600 text-white dark:bg-blue-500 dark:text-white' 
-                        : 'text-muted-foreground hover:text-foreground'
-                    } ${session?.user?.role !== 'ADMIN' ? 'cursor-default' : 'cursor-pointer'}`}
-                    onClick={() => session?.user?.role === 'ADMIN' && updateIsPrivate(false)}
-                    disabled={session?.user?.role !== 'ADMIN'}
-                  >
-                    Public
-                  </button>
-                  <button
-                    className={`px-2 py-1 text-xs font-mono rounded-md transition-colors ${
-                      isPrivate 
-                        ? 'bg-blue-600 text-white dark:bg-blue-500 dark:text-white' 
-                        : 'text-muted-foreground hover:text-foreground'
-                    } ${session?.user?.role !== 'ADMIN' ? 'cursor-default' : 'cursor-pointer'}`}
-                    onClick={() => session?.user?.role === 'ADMIN' && updateIsPrivate(true)}
-                    disabled={session?.user?.role !== 'ADMIN'}
-                  >
-                    Private
-                  </button>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p className="text-xs max-w-xs">
-                  Private documents may contain sensitive information and are available only for the board.
-                </p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          </div>
         </div>
       </div>
 
       {/* Content Container */}
-      <div className="max-w-6xl mx-auto w-full p-4 lg:p-6 flex flex-col overflow-hidden" style={{height: 'calc(100vh - 330px)'}}>
-
-        {/* Search Animation - Fixed height */}
-        {isSearching && (
-          <div className="flex-shrink-0 mb-4">
-            <div className="flex items-center gap-3">
-              <div className="flex gap-1">
-                <div className="w-1.5 h-1.5 bg-muted-foreground rounded-full animate-bounce"></div>
-                <div className="w-1.5 h-1.5 bg-muted-foreground rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
-                <div className="w-1.5 h-1.5 bg-muted-foreground rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
-              </div>
-              <span className="text-muted-foreground text-sm">Searching...</span>
-            </div>
-          </div>
-        )}
-
-        {/* Years detected - Fixed height */}
-        {searchData?.years && searchData.years.length > 0 && (
-          <div className="flex-shrink-0 mb-4">
-            <Badge variant="secondary" className="gap-2">
-              <Calendar className="w-3 h-3" />
-              Years: {searchData.years.join(', ')}
-            </Badge>
-          </div>
-        )}
+      <div className="max-w-6xl mx-auto w-full px-4 lg:px-6 py-3 flex flex-col overflow-hidden flex-1">
 
         {/* Results Container - Takes remaining height */}
-        {(streamedResponse || isStreaming || documents.length > 0) && (
-          <div className="flex-1 flex flex-col lg:flex-row gap-4 lg:gap-8 min-h-0 overflow-hidden">
-            {/* AI Response - Main column (top on mobile, left on desktop) */}
-            {(streamedResponse || isStreaming) && (
-              <div className="flex-[3] lg:max-w-4xl min-h-0">
-                <Card className="h-full flex flex-col">
-                  <CardHeader className="pb-4 flex-shrink-0">
-                    <CardTitle className="text-sm flex items-center gap-2">
-                      Response
-                      {isStreaming && (
-                        <div className="w-1.5 h-1.5 bg-muted-foreground rounded-full animate-pulse" />
-                      )}
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="pt-0 flex-1 flex flex-col overflow-hidden">
-                    <div
-                      ref={responseRef}
-                      className="prose prose-neutral prose-sm max-w-none overflow-y-auto flex-1 min-h-0 pl-4 pr-6 py-4 prose-a:text-blue-600 dark:prose-a:text-blue-400 prose-a:no-underline"
-                    >
-                      <ReactMarkdown 
-                        className="leading-relaxed"
-                        components={{
-                          h1: ({ children }) => <h1 className="text-lg font-semibold mb-3 mt-6 first:mt-0">{children}</h1>,
-                          h2: ({ children }) => <h2 className="text-base font-medium mb-2 mt-5 first:mt-0">{children}</h2>,
-                          h3: ({ children }) => <h3 className="text-sm font-medium mb-2 mt-4 first:mt-0">{children}</h3>,
-                          p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
-                          ul: ({ children }) => <ul className="mb-3 pl-4 space-y-1">{children}</ul>,
-                          ol: ({ children }) => <ol className="mb-3 pl-4 space-y-1">{children}</ol>,
-                          li: ({ children }) => <li className="text-sm">{children}</li>,
-                          strong: ({ children }) => <strong className="font-medium">{children}</strong>,
-                          em: ({ children }) => <em className="italic">{children}</em>,
-                          code: ({ children }) => <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>,
-                          pre: ({ children }) => <pre className="bg-muted p-3 rounded text-xs overflow-x-auto mb-3">{children}</pre>,
-                          a: ({ children, href }) => (
-                            <a
-                              href={href}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 underline decoration-2 underline-offset-2 inline-flex items-center gap-1 font-medium transition-colors"
-                            >
-                              {children}
-                              <ExternalLink className="w-3 h-3 inline flex-shrink-0" />
-                            </a>
-                          ),
-                        }}
-                      >
-                        {streamedResponse}
-                      </ReactMarkdown>
+        {(submittedQuestion && (isSearching || isStreaming || finalResponse || documents.length > 0)) && (
+          <div className="flex-1 flex flex-col lg:flex-row gap-4 lg:gap-6 min-h-0 overflow-hidden">
+            {/* Left column - Question + Response */}
+            <div className="flex-[2] min-h-0 flex flex-col">
+              {/* Question Heading - Perplexity style */}
+              <div className="flex-shrink-0 mb-4">
+                <h1
+                  key={animationKey}
+                  className={`text-2xl lg:text-3xl font-semibold tracking-tight leading-tight animate-pullup-blur ${
+                    isSearching || isStreaming ? 'thinking-gradient' : 'text-foreground'
+                  }`}
+                >
+                  {submittedQuestion}
+                </h1>
+
+                {/* Progress roadmap */}
+                {(isSearching || isStreaming) && (
+                  <div className="flex items-center gap-3 mt-4 animate-fade-in">
+                    {/* Step 1: Searching */}
+                    <div className="flex items-center gap-2">
+                      <div className="relative">
+                        {/* Pulse ring for active step */}
+                        {isSearching && !searchData && (
+                          <div className="absolute inset-0 rounded-full bg-foreground/30 animate-ping" />
+                        )}
+                        <div className={`relative w-5 h-5 rounded-full flex items-center justify-center text-xs font-medium transition-all duration-300 ${
+                          isSearching && !searchData
+                            ? 'bg-foreground text-background'
+                            : searchData
+                              ? 'bg-foreground/20 text-foreground/60'
+                              : 'bg-foreground/10 text-foreground/30'
+                        }`}>
+                          {searchData ? (
+                            <Check className="w-3 h-3" />
+                          ) : (
+                            <span>1</span>
+                          )}
+                        </div>
+                      </div>
+                      <span className={`text-sm transition-all duration-300 ${
+                        isSearching && !searchData ? 'text-foreground font-medium' : 'text-foreground/40'
+                      }`}>
+                        Search
+                      </span>
                     </div>
-                  </CardContent>
-                </Card>
+
+                    {/* Connector 1 */}
+                    <div className="w-8 h-px bg-foreground/10 relative overflow-hidden">
+                      <div className={`absolute inset-y-0 left-0 bg-foreground/40 transition-all duration-500 ${
+                        searchData ? 'w-full' : 'w-0'
+                      }`} />
+                    </div>
+
+                    {/* Step 2: Analyzing */}
+                    <div className="flex items-center gap-2">
+                      <div className="relative">
+                        {/* Pulse ring for active step */}
+                        {searchData && !streamedResponse && (
+                          <div className="absolute inset-0 rounded-full bg-foreground/30 animate-ping" />
+                        )}
+                        <div className={`relative w-5 h-5 rounded-full flex items-center justify-center text-xs font-medium transition-all duration-300 ${
+                          searchData && !streamedResponse
+                            ? 'bg-foreground text-background'
+                            : streamedResponse
+                              ? 'bg-foreground/20 text-foreground/60'
+                              : 'bg-foreground/10 text-foreground/30'
+                        }`}>
+                          {streamedResponse ? (
+                            <Check className="w-3 h-3" />
+                          ) : (
+                            <span>2</span>
+                          )}
+                        </div>
+                      </div>
+                      <span className={`text-sm transition-all duration-300 ${
+                        searchData && !streamedResponse ? 'text-foreground font-medium' : 'text-foreground/40'
+                      }`}>
+                        Analyze
+                      </span>
+                    </div>
+
+                    {/* Connector 2 */}
+                    <div className="w-8 h-px bg-foreground/10 relative overflow-hidden">
+                      <div className={`absolute inset-y-0 left-0 bg-foreground/40 transition-all duration-500 ${
+                        streamedResponse ? 'w-full' : 'w-0'
+                      }`} />
+                    </div>
+
+                    {/* Step 3: Generating */}
+                    <div className="flex items-center gap-2">
+                      <div className="relative">
+                        {/* Pulse ring for active step */}
+                        {isStreaming && streamedResponse && (
+                          <div className="absolute inset-0 rounded-full bg-foreground/30 animate-ping" />
+                        )}
+                        <div className={`relative w-5 h-5 rounded-full flex items-center justify-center text-xs font-medium transition-all duration-300 ${
+                          isStreaming && streamedResponse
+                            ? 'bg-foreground text-background'
+                            : !isStreaming && streamedResponse
+                              ? 'bg-foreground/20 text-foreground/60'
+                              : 'bg-foreground/10 text-foreground/30'
+                        }`}>
+                          {!isStreaming && streamedResponse ? (
+                            <Check className="w-3 h-3" />
+                          ) : (
+                            <span>3</span>
+                          )}
+                        </div>
+                      </div>
+                      <span className={`text-sm transition-all duration-300 ${
+                        isStreaming && streamedResponse ? 'text-foreground font-medium' : 'text-foreground/40'
+                      }`}>
+                        Generate
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Years detected */}
+                {searchData?.years && searchData.years.length > 0 && !isSearching && !isStreaming && (
+                  <div className="mt-3 animate-fade-in">
+                    <Badge variant="secondary" className="gap-1.5 text-xs">
+                      <Calendar className="w-3 h-3" />
+                      {searchData.years.join(', ')}
+                    </Badge>
+                  </div>
+                )}
               </div>
-            )}
+
+              {/* AI Response */}
+              {finalResponse && (
+                <div className="flex-1 min-h-0 mt-6">
+                  <div
+                    ref={responseRef}
+                    className="overflow-y-auto h-full"
+                  >
+                    <AnimatedResponse content={finalResponse} animationKey={animationKey} />
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Documents Sidebar - Right on desktop, bottom on mobile */}
             {documents.length > 0 && (
-              <div className="flex-1 lg:w-72 lg:flex-shrink-0 min-w-0 min-h-0 flex flex-col">
-                <Card className="h-full flex flex-col">
-                  <CardHeader className="pb-4 flex-shrink-0">
-                    <CardTitle className="text-sm flex items-center gap-2">
-                    <FileText className="w-4 h-4" />
-                      Possibly Related ({documents.length})
+              <div key={animationKey} className="flex-1 lg:w-80 lg:flex-shrink-0 min-w-0 min-h-0 flex flex-col">
+                <Card className="h-full flex flex-col border-border shadow-sm animate-card-appear">
+                  <CardHeader className="pb-3 flex-shrink-0 border-b border-border">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2 text-foreground/70">
+                      <FileText className="w-4 h-4" />
+                      Sources ({documents.length})
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="overflow-y-auto overflow-x-hidden pt-0 flex-1">
-                    <div className="grid grid-cols-2 lg:grid-cols-1 gap-2 lg:gap-3">
+                  <CardContent className="overflow-y-auto overflow-x-hidden pt-3 flex-1">
+                    <div className="grid grid-cols-2 lg:grid-cols-1 gap-2">
                       {documents.map((doc, index) => (
-                        <Card
+                        <div
                           key={doc.id || index}
-                          className="p-2 lg:p-3"
+                          className="p-2.5 rounded-lg border border-border bg-secondary/50 hover:bg-secondary transition-colors animate-card-appear"
+                          style={{ animationDelay: `${150 + index * 60}ms` }}
                         >
-                        <div className="space-y-1 lg:space-y-2 min-w-0">
-                          <h3 className="font-medium text-xs lg:text-sm leading-tight break-words">
+                        <div className="space-y-1.5 min-w-0">
+                          <h3 className="font-medium text-xs leading-tight break-words text-foreground/90">
                             {doc.name}
                           </h3>
-                          <div className="flex items-center gap-1 lg:gap-2 text-xs text-muted-foreground">
-                  <Calendar className="w-3 h-3" />
-                            <span className="text-xs">Board {doc.year}</span>
-                            <Badge variant="outline" className="text-xs h-4 lg:h-5 px-1">
+                          <div className="flex items-center gap-1.5 text-[11px] text-foreground/50">
+                            <Calendar className="w-3 h-3" />
+                            <span>{doc.year}</span>
+                            <Badge variant="secondary" className="text-[10px] h-4 px-1 font-mono">
                               {(doc.score * 100).toFixed(0)}%
                             </Badge>
                           </div>
-                          <div className="flex gap-1 lg:gap-2">
+                          <div className="flex gap-2 pt-1">
                             <Dialog>
                               <DialogTrigger asChild>
                                 <Button
@@ -654,7 +753,7 @@ export default function Home() {
                             )}
                           </div>
                         </div>
-                      </Card>
+                      </div>
                     ))}
                     </div>
                   </CardContent>
@@ -668,52 +767,33 @@ export default function Home() {
 
         {/* Empty State */}
         {!isSearching && !documents.length && !streamedResponse && (
-          <div className="text-center py-16">
-            <div className="w-12 h-12 bg-muted rounded-full flex items-center justify-center mx-auto mb-4">
-                <Search className="w-5 h-5 text-muted-foreground" />
+          <div className="flex-1 flex items-center justify-center animate-fade-in">
+            <div className="text-center">
+              <p className="text-foreground/40 text-lg">
+                {session ? `Hi ${session.user?.name?.split(' ')[0] || 'there'}, ` : ''}Ask a question about Aaltoes to get started
+              </p>
             </div>
-            {session ? (
-              <>
-                <h3 className="text-base font-medium text-foreground mb-1">
-                  Hi {session.user?.name?.split(' ')[0] || 'there'}, ask about Aaltoes
-                </h3>
-                <p className="text-muted-foreground text-sm">
-                  Search through board decisions, budgets, and documents
-                </p>
-              </>
-            ) : (
-              <>
-                <h3 className="text-base font-medium text-foreground mb-1">
-                  Ask about Aaltoes
-                </h3>
-                <p className="text-muted-foreground text-sm">
-                  Search through board decisions, budgets, and documents
-                </p>
-              </>
-            )}
           </div>
         )}
       </div>
 
       {/* Login Required Modal */}
       <Dialog open={showLoginModal} onOpenChange={setShowLoginModal}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-center font-mono">BLUEPRINT</DialogTitle>
-          </DialogHeader>
-          <div className="text-center py-6">
-            <div className="mb-6">
-                              <p className="text-muted-foreground text-sm leading-relaxed mb-4">
-                Provides access to Aaltoes knowledge base.
-              </p>
-              <p className="text-muted-foreground text-sm">
-                <span className="font-medium">Exclusively for Aaltoes members.</span>
-              </p>
-            </div>
-            <div className="flex gap-3 justify-center items-center">
+        <DialogContent className="sm:max-w-sm border-border bg-background">
+          <div className="text-center pt-2 pb-4">
+            <h2 className="text-base font-semibold text-foreground tracking-tight mb-6">
+              BLUEPRINT
+            </h2>
+            <p className="text-foreground/60 text-base leading-relaxed mb-2">
+              Provides access to Aaltoes knowledge base.
+            </p>
+            <p className="text-foreground/60 text-base mb-8">
+              Exclusively for Aaltoes members.
+            </p>
+            <div className="flex gap-3 justify-center">
               <Button
-                variant="default"
-                className="h-auto px-4 py-2 text-sm font-mono min-w-[100px] bg-primary text-primary-foreground hover:bg-primary/90"
+                variant="outline"
+                className="h-10 px-5 text-sm font-medium border-border hover:bg-secondary"
                 onClick={() => {
                   setShowLoginModal(false);
                   window.open('https://www.aaltoes.com/get-involved', '_blank');
@@ -723,7 +803,7 @@ export default function Home() {
               </Button>
               <Button
                 variant="default"
-                className="h-auto px-4 py-2 text-sm font-mono min-w-[100px] dark:bg-white dark:text-black dark:hover:bg-gray-100"
+                className="h-10 px-5 text-sm font-medium"
                 onClick={() => {
                   setShowLoginModal(false);
                   signIn('google');
@@ -795,237 +875,130 @@ export default function Home() {
       </Dialog>
 
       {/* Search Input - Fixed at bottom */}
-      <div className="fixed bottom-0 left-0 right-0 bg-background z-10">
-        <div className="max-w-6xl mx-auto p-4 lg:p-6">
-          {/* Year Selection and TopK */}
-          <div className="mb-4">
-            {/* Mobile: Compact horizontal scroll */}
-            <div className="sm:hidden">
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-muted-foreground">Top-k:</span>
-                  <Select value={topK.toString()} onValueChange={(value) => updateTopK(parseInt(value))}>
-                    <SelectTrigger className="w-16 h-8 text-xs font-mono touch-manipulation">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {topKOptions.map((k) => (
-                        <SelectItem key={k} value={k.toString()} className="text-sm font-mono h-10">
-                          {k}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-              </div>
+      <div className="bg-background pt-4 pb-8 lg:pb-12">
+        <div className="max-w-6xl mx-auto px-4 lg:px-6">
+          <Card className="border-border/50 shadow-sm">
+            <CardContent className="p-3">
               <div className="flex items-center gap-3">
-                <span className="text-sm font-medium text-muted-foreground mr-1">Type:</span>
+                <div className="flex-1 relative">
+                  <Textarea
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        if (!isSearching && !isStreaming) {
+                          handleSearch();
+                        }
+                      }
+                    }}
+                    placeholder="Ask about Aaltoes board decisions, budgets, or projects..."
+                    rows={1}
+                    className="resize-none text-lg min-h-[52px] py-3 bg-transparent border-0 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-foreground/40"
+                  />
+                </div>
+                <Button
+                  onClick={isStreaming ? handleStop : handleSearch}
+                  disabled={isSearching && !isStreaming || !question.trim()}
+                  variant={isStreaming ? 'destructive' : 'default'}
+                  className="h-10 w-10 p-0 rounded-lg flex-shrink-0"
+                  size="sm"
+                >
+                  {isSearching && !isStreaming ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : isStreaming ? (
+                    <Square className="w-4 h-4 fill-current" />
+                  ) : (
+                    <Search className="w-5 h-5" />
+                  )}
+                </Button>
+              </div>
+
+              {/* Filters row */}
+              <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border/30 flex-wrap">
+                <span className="text-xs text-foreground/40">Filters:</span>
+
+                {/* Year buttons */}
+                {availableYears.map((year) => (
+                  <button
+                    key={year}
+                    className={`text-xs h-7 px-2.5 rounded-md font-medium transition-colors ${
+                      selectedYears.includes(year)
+                        ? 'bg-foreground text-background'
+                        : 'text-foreground/50 hover:text-foreground hover:bg-secondary'
+                    }`}
+                    onClick={() => toggleYear(year)}
+                  >
+                    {year}
+                  </button>
+                ))}
+
+                {selectedYears.length > 0 && (
+                  <button
+                    onClick={() => setSelectedYears([])}
+                    className="h-7 w-7 p-0 flex items-center justify-center text-foreground/40 hover:text-foreground rounded-md hover:bg-secondary"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+
+                <div className="h-4 w-px bg-border mx-1" />
+
+                {/* Data type dropdown */}
                 <Popover>
                   <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-6 px-2 text-xs font-mono mr-2 justify-between w-36"
-                    >
-                      <span>
-                        {selectedDataTypes.length === 0 
-                          ? 'All' 
-                          : selectedDataTypes.length === 1 
-                            ? availableDataTypes.find(dt => dt.value === selectedDataTypes[0])?.label
-                            : `${selectedDataTypes.length} selected`
-                        }
-                      </span>
-                      <ChevronsUpDown 
-                        className="h-3 w-3 ml-1" 
-                        style={{ color: theme === 'dark' ? '#ffffff' : '#000000' }}
-                      />
-                    </Button>
+                    <button className="text-xs h-7 px-2.5 rounded-md font-medium text-foreground/50 hover:text-foreground hover:bg-secondary flex items-center gap-1">
+                      {selectedDataTypes.length === 0 ? 'All types' : `${selectedDataTypes.length} type${selectedDataTypes.length > 1 ? 's' : ''}`}
+                      <ChevronsUpDown className="h-3.5 w-3.5" />
+                    </button>
                   </PopoverTrigger>
-                  <PopoverContent className="w-[200px] p-2 shadow-none" align="start" side="top">
-                    <Command className="bg-transparent">
-                      <CommandList>
-                        <CommandGroup>
-                          {availableDataTypes.filter(dt => dt.value !== 'all').map((dataType) => (
-                            <CommandItem
-                              key={dataType.value}
-                              onSelect={() => {
-                                setSelectedDataTypes(prev => 
-                                  prev.includes(dataType.value)
-                                    ? prev.filter(t => t !== dataType.value)
-                                    : [...prev, dataType.value]
-                                );
-                              }}
-                              className="text-xs py-2 px-2 rounded-md cursor-pointer data-[selected=true]:bg-transparent data-[selected=true]:text-foreground flex justify-between items-center"
-                            >
-                              <span className="font-mono text-xs">{dataType.label}</span>
-                              <Check
-                                className={`h-3 w-3 text-black dark:text-white ${
-                                  selectedDataTypes.includes(dataType.value) ? "opacity-100" : "opacity-0"
-                                }`}
-                              />
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      </CommandList>
-                    </Command>
+                  <PopoverContent className="w-[160px] p-1" align="start" side="top">
+                    {availableDataTypes.filter(dt => dt.value !== 'all').map((dataType) => (
+                      <button
+                        key={dataType.value}
+                        onClick={() => {
+                          setSelectedDataTypes(prev =>
+                            prev.includes(dataType.value)
+                              ? prev.filter(t => t !== dataType.value)
+                              : [...prev, dataType.value]
+                          );
+                        }}
+                        className="w-full text-left text-sm py-2 px-2.5 rounded hover:bg-secondary flex items-center justify-between"
+                      >
+                        <span>{dataType.label}</span>
+                        {selectedDataTypes.includes(dataType.value) && (
+                          <Check className="h-4 w-4" />
+                        )}
+                      </button>
+                    ))}
+                  </PopoverContent>
+                </Popover>
+
+                <div className="h-4 w-px bg-border mx-1" />
+
+                {/* Top-k dropdown */}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button className="text-xs h-7 px-2.5 rounded-md font-medium text-foreground/50 hover:text-foreground hover:bg-secondary flex items-center gap-1">
+                      Top {topK}
+                      <ChevronsUpDown className="h-3.5 w-3.5" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[90px] p-1" align="start" side="top">
+                    {topKOptions.map((k) => (
+                      <button
+                        key={k}
+                        onClick={() => updateTopK(k)}
+                        className={`w-full text-left text-sm py-2 px-2.5 rounded hover:bg-secondary ${topK === k ? 'bg-secondary' : ''}`}
+                      >
+                        {k}
+                      </button>
+                    ))}
                   </PopoverContent>
                 </Popover>
               </div>
-              <div className="flex items-center gap-2 mb-2 mt-2">
-                <span className="text-sm font-medium text-muted-foreground shrink-0">Board:</span>
-                <div className="flex gap-1 overflow-x-auto scrollbar-hide">
-                  {availableYears.map((year) => (
-                    <Button
-                      key={year}
-                      variant="outline"
-                      size="sm"
-                      className={`text-xs h-8 px-2 font-mono border shrink-0 touch-manipulation ${
-                        selectedYears.includes(year)
-                          ? 'bg-black dark:bg-white text-white dark:text-black border-black dark:border-white'
-                          : 'bg-background text-foreground border-border'
-                      }`}
-                      onClick={() => toggleYear(year)}
-                    >
-                      {year}
-                    </Button>
-                  ))}
-                  {selectedYears.length > 0 && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setSelectedYears([])}
-                      className="h-8 w-8 p-0 font-mono shrink-0 touch-manipulation"
-                    >
-                <X className="h-4 w-4" />
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>
-            
-            {/* Desktop: Single line */}
-            <div className="hidden sm:flex flex-wrap gap-2 items-center">
-              <span className="text-sm font-medium text-muted-foreground mr-1">Top-k:</span>
-              <Select value={topK.toString()} onValueChange={(value) => updateTopK(parseInt(value))}>
-                <SelectTrigger className="w-16 h-6 text-xs font-mono mr-2">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {topKOptions.map((k) => (
-                    <SelectItem key={k} value={k.toString()} className="text-xs font-mono h-8">
-                      {k}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              <span className="text-sm font-medium text-muted-foreground mr-1">Type:</span>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-6 px-2 text-xs font-mono mr-2 justify-between w-36"
-                  >
-                    <span>
-                      {selectedDataTypes.length === 0 
-                        ? 'All' 
-                        : selectedDataTypes.length === 1 
-                          ? availableDataTypes.find(dt => dt.value === selectedDataTypes[0])?.label
-                          : `${selectedDataTypes.length} selected`
-                      }
-                    </span>
-                    <ChevronsUpDown 
-                      className="h-3 w-3 ml-1" 
-                      style={{ color: theme === 'dark' ? '#ffffff' : '#000000' }}
-                    />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-[200px] p-2 shadow-none" align="start" side="top">
-                  <Command className="bg-transparent">
-                    <CommandList>
-                      <CommandGroup>
-                        {availableDataTypes.filter(dt => dt.value !== 'all').map((dataType) => (
-                          <CommandItem
-                            key={dataType.value}
-                            onSelect={() => {
-                              setSelectedDataTypes(prev => 
-                                prev.includes(dataType.value)
-                                  ? prev.filter(t => t !== dataType.value)
-                                  : [...prev, dataType.value]
-                              );
-                            }}
-                            className="text-xs py-2 px-2 rounded-md cursor-pointer data-[selected=true]:bg-transparent data-[selected=true]:text-foreground flex justify-between items-center"
-                          >
-                            <span className="font-mono text-xs">{dataType.label}</span>
-                            <Check
-                              className={`h-3 w-3 text-black dark:text-white ${
-                                selectedDataTypes.includes(dataType.value) ? "opacity-100" : "opacity-0"
-                              }`}
-                            />
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
-
-              <span className="text-sm font-medium text-muted-foreground mr-1">Board:</span>
-              {availableYears.map((year) => (
-                <Button
-                  key={year}
-                  variant="outline"
-                  size="sm"
-                  className={`text-xs h-6 px-2 font-mono border ${
-                    selectedYears.includes(year)
-                      ? 'bg-black dark:bg-white text-white dark:text-black border-black dark:border-white'
-                      : 'bg-background text-foreground border-border'
-                  }`}
-                  onClick={() => toggleYear(year)}
-                >
-                  {year}
-                </Button>
-              ))}
-              {selectedYears.length > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setSelectedYears([])}
-                  className="h-6 w-6 p-0 font-mono"
-                >
-                  <X className="h-3 w-3" />
-                </Button>
-              )}
-            </div>
-          </div>
-          
-          <div className="relative">
-            <Textarea
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder={session ? "Ask about Aaltoes board decisions, budgets, or projects..." : "Please login to ask questions..."}
-              rows={3}
-              className={`resize-none text-sm lg:text-base pr-16 ${!session ? 'opacity-60' : ''}`}
-            />
-            <Button
-              onClick={isStreaming ? handleStop : handleSearch}
-              disabled={isSearching && !isStreaming || !question.trim() || !session}
-              variant={isStreaming ? 'destructive' : (theme === 'dark' ? 'secondary' : 'default')}
-              className="absolute bottom-2 right-2 h-10 w-10 p-0 font-mono"
-              size="sm"
-            >
-              {isSearching && !isStreaming ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-              ) : isStreaming ? (
-                <Square className="w-4 h-4" />
-              ) : (
-                <Search className="w-5 h-5" />
-              )}
-            </Button>
-          </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
     </main>
