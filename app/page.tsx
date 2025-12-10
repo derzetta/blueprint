@@ -383,10 +383,10 @@ export default function Home() {
               <img
                 src={theme === 'dark' ? "https://www.aaltoes.com/bank/aaltoes_white.svg" : "https://www.aaltoes.com/bank/aaltoes_dark.svg"}
                 alt="Aaltoes"
-                className="h-6 opacity-70"
+                className="h-6"
               />
               <div className="h-5 w-px bg-border" />
-              <h1 className="text-base font-semibold text-foreground tracking-tight">
+              <h1 className="text-base font-normal text-foreground font-mono tracking-wider">
                 BLUEPRINT
               </h1>
             </div>
@@ -396,11 +396,11 @@ export default function Home() {
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <div className="inline-flex rounded-md border border-border bg-secondary/50 p-0.5">
+                    <div className="inline-flex rounded-full border border-border bg-secondary/30 p-0.5">
                       <button
-                        className={`px-3 py-1.5 text-sm font-medium rounded transition-all ${
+                        className={`px-3 py-1.5 text-sm font-medium rounded-full transition-all ${
                           !isPrivate
-                            ? 'bg-foreground text-background'
+                            ? 'bg-foreground/10 text-foreground'
                             : 'text-foreground/50 hover:text-foreground'
                         } ${session?.user?.role !== 'ADMIN' ? 'cursor-default' : 'cursor-pointer'}`}
                         onClick={() => session?.user?.role === 'ADMIN' && updateIsPrivate(false)}
@@ -409,9 +409,9 @@ export default function Home() {
                         Public
                       </button>
                       <button
-                        className={`px-3 py-1.5 text-sm font-medium rounded transition-all ${
+                        className={`px-3 py-1.5 text-sm font-medium rounded-full transition-all ${
                           isPrivate
-                            ? 'bg-foreground text-background'
+                            ? 'bg-foreground/10 text-foreground'
                             : 'text-foreground/50 hover:text-foreground'
                         } ${session?.user?.role !== 'ADMIN' ? 'cursor-default' : 'cursor-pointer'}`}
                         onClick={() => session?.user?.role === 'ADMIN' && updateIsPrivate(true)}
@@ -435,7 +435,7 @@ export default function Home() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-9 w-9 p-0 rounded-md text-foreground/50 hover:text-foreground hover:bg-secondary"
+                className="h-9 w-9 p-0 rounded-full text-foreground/50 hover:text-foreground hover:bg-secondary"
                 onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
               >
                 {theme === 'light' ? (
@@ -449,7 +449,7 @@ export default function Home() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-9 px-4 text-sm font-medium text-foreground/70 hover:text-foreground hover:bg-secondary"
+                  className="h-9 px-4 text-sm font-medium rounded-full text-foreground/70 hover:text-foreground hover:bg-secondary"
                   onClick={() => signOut()}
                 >
                   Logout
@@ -458,7 +458,7 @@ export default function Home() {
                 <Button
                   variant="default"
                   size="sm"
-                  className="h-9 px-4 text-sm font-medium"
+                  className="h-9 px-4 text-sm font-medium rounded-full"
                   onClick={() => signIn('google')}
                 >
                   Login
@@ -897,34 +897,34 @@ export default function Home() {
                     className="resize-none text-lg min-h-[52px] py-3 bg-transparent border-0 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-foreground/40"
                   />
                 </div>
-                <Button
-                  onClick={isStreaming ? handleStop : handleSearch}
-                  disabled={isSearching && !isStreaming || !question.trim()}
-                  variant={isStreaming ? 'destructive' : 'default'}
-                  className="h-10 w-10 p-0 rounded-lg flex-shrink-0"
-                  size="sm"
-                >
-                  {isSearching && !isStreaming ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : isStreaming ? (
-                    <Square className="w-4 h-4 fill-current" />
-                  ) : (
-                    <Search className="w-5 h-5" />
-                  )}
-                </Button>
+                {isSearching || isStreaming ? (
+                  <Button
+                    onClick={handleStop}
+                    variant="destructive"
+                    className="h-10 w-10 p-0 rounded-full flex-shrink-0"
+                    size="sm"
+                  >
+                    {isSearching && !isStreaming ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <Square className="w-4 h-4 fill-current" />
+                    )}
+                  </Button>
+                ) : question.trim() ? (
+                  <span className="text-xs text-foreground/40 flex-shrink-0 px-2">Press Enter ↵</span>
+                ) : null}
               </div>
 
               {/* Filters row */}
               <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border/30 flex-wrap">
-                <span className="text-xs text-foreground/40">Filters:</span>
-
+                
                 {/* Year buttons */}
                 {availableYears.map((year) => (
                   <button
                     key={year}
-                    className={`text-xs h-7 px-2.5 rounded-md font-medium transition-colors ${
+                    className={`text-xs h-7 px-2.5 rounded-full font-medium transition-colors ${
                       selectedYears.includes(year)
-                        ? 'bg-foreground text-background'
+                        ? 'bg-foreground/10 text-foreground'
                         : 'text-foreground/50 hover:text-foreground hover:bg-secondary'
                     }`}
                     onClick={() => toggleYear(year)}
@@ -936,7 +936,7 @@ export default function Home() {
                 {selectedYears.length > 0 && (
                   <button
                     onClick={() => setSelectedYears([])}
-                    className="h-7 w-7 p-0 flex items-center justify-center text-foreground/40 hover:text-foreground rounded-md hover:bg-secondary"
+                    className="h-7 w-7 p-0 flex items-center justify-center text-foreground/40 hover:text-foreground rounded-full hover:bg-secondary"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -947,7 +947,7 @@ export default function Home() {
                 {/* Data type dropdown */}
                 <Popover>
                   <PopoverTrigger asChild>
-                    <button className="text-xs h-7 px-2.5 rounded-md font-medium text-foreground/50 hover:text-foreground hover:bg-secondary flex items-center gap-1">
+                    <button className="text-xs h-7 px-2.5 rounded-full font-medium text-foreground/50 hover:text-foreground hover:bg-secondary flex items-center gap-1">
                       {selectedDataTypes.length === 0 ? 'All types' : `${selectedDataTypes.length} type${selectedDataTypes.length > 1 ? 's' : ''}`}
                       <ChevronsUpDown className="h-3.5 w-3.5" />
                     </button>
@@ -979,7 +979,7 @@ export default function Home() {
                 {/* Top-k dropdown */}
                 <Popover>
                   <PopoverTrigger asChild>
-                    <button className="text-xs h-7 px-2.5 rounded-md font-medium text-foreground/50 hover:text-foreground hover:bg-secondary flex items-center gap-1">
+                    <button className="text-xs h-7 px-2.5 rounded-full font-medium text-foreground/50 hover:text-foreground hover:bg-secondary flex items-center gap-1">
                       Top {topK}
                       <ChevronsUpDown className="h-3.5 w-3.5" />
                     </button>
