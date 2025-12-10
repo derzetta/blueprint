@@ -24,6 +24,50 @@ async function getEmbedding(text: string) {
   return response.data[0].embedding;
 }
 
+// AI-powered query expansion
+async function expandQuery(question: string): Promise<string> {
+  try {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `You are a search query optimizer for Aaltoes (Aalto Entrepreneurship Society) document database.
+Your task is to expand the user's search query to improve document retrieval.
+
+Rules:
+- Add relevant synonyms and related terms
+- Include both formal and informal variations
+- Add Finnish equivalents if relevant (Aaltoes is based in Finland)
+- Keep the expanded query concise (max 100 words)
+- Focus on business, entrepreneurship, and organizational terms
+- Return ONLY the expanded query, no explanations
+
+Example:
+Input: "budget 2024"
+Output: "budget 2024 finances financial plan spending expenses costs allocation money funding annual budget yearly budget talousarvio"`
+        },
+        {
+          role: 'user',
+          content: question
+        }
+      ],
+      max_tokens: 150,
+      temperature: 0.3,
+    });
+
+    const expandedQuery = response.choices[0]?.message?.content?.trim();
+    if (expandedQuery) {
+      console.log('Query expanded:', question, '->', expandedQuery);
+      return expandedQuery;
+    }
+    return question;
+  } catch (error) {
+    console.error('Query expansion failed, using original:', error);
+    return question;
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { question, selectedYears, selectedDataTypes, topK } = await request.json();
@@ -69,19 +113,21 @@ export async function POST(request: NextRequest) {
     
     // Step 3: Preprocess question (replace aaltoes with Aaltoes)
     const processedQuestion = question.replace(/\baaltoes\b/gi, 'Aaltoes');
-    
+
     // Step 4: Only search if question is related to Aaltoes
     let documents: Array<{id: string; name: string; year: string; score: number; numQuestions: number; link: string | null}> = [];
     let allChunks: Document[] = [];
-    let summaryResults: any = null;
-    
+
     if (isRelatedToAaltoes) {
       // Step 4a: Get appropriate indexes based on private access
       const { summaryIndex, chunkIndex, questionsIndex } = getIndexes(isPrivate);
       console.log('Using indexes for private access:', isPrivate);
-      
-      // Step 4b: Get embedding for the question
-      const questionEmbedding = await getEmbedding(processedQuestion);
+
+      // Step 4b: Expand query with AI for better semantic matching
+      const expandedQuery = await expandQuery(processedQuestion);
+
+      // Step 4c: Get embedding for the expanded question
+      const questionEmbedding = await getEmbedding(expandedQuery);
       
       // Step 4c: Search both summaries and questions indexes for comprehensive results
       console.log('Searching summaries and questions indexes');
