@@ -113,21 +113,19 @@ export async function POST(request: NextRequest) {
     
     // Step 3: Preprocess question (replace aaltoes with Aaltoes)
     const processedQuestion = question.replace(/\baaltoes\b/gi, 'Aaltoes');
-
+    
     // Step 4: Only search if question is related to Aaltoes
     let documents: Array<{id: string; name: string; year: string; score: number; numQuestions: number; link: string | null}> = [];
     let allChunks: Document[] = [];
-
+    let summaryResults: any = null;
+    
     if (isRelatedToAaltoes) {
       // Step 4a: Get appropriate indexes based on private access
       const { summaryIndex, chunkIndex, questionsIndex } = getIndexes(isPrivate);
       console.log('Using indexes for private access:', isPrivate);
-
-      // Step 4b: Expand query with AI for better semantic matching
-      const expandedQuery = await expandQuery(processedQuestion);
-
-      // Step 4c: Get embedding for the expanded question
-      const questionEmbedding = await getEmbedding(expandedQuery);
+      
+      // Step 4b: Get embedding for the question
+      const questionEmbedding = await getEmbedding(processedQuestion);
       
       // Step 4c: Search both summaries and questions indexes for comprehensive results
       console.log('Searching summaries and questions indexes');
