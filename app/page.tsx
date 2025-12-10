@@ -489,7 +489,7 @@ export default function Home() {
                 </h1>
 
                 {/* Progress roadmap */}
-                {(isSearching || isStreaming) && (
+                {(isSearching || isStreaming || finalResponse) && (
                   <div className="flex items-center gap-3 mt-4 animate-fade-in">
                     {/* Step 1: Searching */}
                     <div className="flex items-center gap-2">
